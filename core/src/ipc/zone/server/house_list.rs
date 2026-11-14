@@ -1,4 +1,7 @@
-use crate::{common::HousingFlag, ipc::zone::PlotSize};
+use crate::{
+    common::HousingFlag,
+    ipc::zone::{PlotSize, WardDivisionInfo},
+};
 use binrw::binrw;
 use serde::{Deserialize, Serialize};
 
@@ -80,8 +83,8 @@ pub struct HouseList {
     pub territory_type_id: u16,
     pub world_id: u16,
 
-    #[brw(pad_after = 4)] // seems empty
-    pub subdivision: u32,
+    #[brw(pad_after = 6)] // Empty
+    pub division_info: WardDivisionInfo,
 
     pub houses: [House; 30],
 }

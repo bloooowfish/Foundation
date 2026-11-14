@@ -25,14 +25,15 @@ pub struct FurnitureList {
     pub furniture: Vec<Furniture>,
 }
 
-// TODO: Figure out if the unknown fields need to be serialized or not
+// TODO: Figure out if `exterior_window_dye` needs to be serialized
 #[binrw]
 #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct HousingInteriorDetails {
     /// This interior's window style.
     pub window_style: u16,
+    /// Seems to only be affected by all-in-one exterior sets. In interiors, it has no noticeable visual effect. Perhaps a deprecated or abandoned field.
     #[serde(default, skip_serializing)]
-    pub unk1: u16, // Sapphire calls this "window color", but windows cannot be dyed?
+    pub exterior_window_dye: u16, // From worstaquaplayer: v10.ExteriorStains[1] = a2->field_2;
     /// This interior's door style.
     pub door_style: u16,
     /// This interior door's dye colour. Index into the Stain Excel sheet.
@@ -44,8 +45,7 @@ pub struct HousingInteriorDetails {
     #[bw(map = write_bool_as::<u8>)]
     #[brw(pad_after = 3)] // Likely padding/empty, observed only as zeroes so far
     pub enable_ssao: bool,
-    /// The ground floor's wall style. In an apartment, this along with ground_floor and ground_chandelier dictate what will decorate the apartment, leaving doors, windows, top floor and cellar all zeroes/blank.
-    // TODO: It's unclear if these are pairs of u16s or just u32s.
+    /// The ground floor's wall style. In an apartment, this along with ground_floor and ground_chandelier dictate what will decorate the apartment, leaving doors, windows, top floor and cellar all zeroes/blank..
     // NOTE: Be careful when experimenting with these values, as invalid combinations of u16s can crash the client, particularly if the interior is an apartment and top floor or cellar values are changed!
     pub ground_walls: u32,
     /// The ground floor's style/texture.
@@ -65,9 +65,8 @@ pub struct HousingInteriorDetails {
     /// The cellar's chandelier.
     pub cellar_chandelier: u32,
     /// The mansion's grand chandelier ("options - ceiling light") in the foyer.
+    #[brw(pad_after = 4)] // Empty, client doesn't read it
     pub grand_chandelier: u32,
-    #[serde(default, skip_serializing)]
-    unk3: u32, // Might just be padding, seen as zeroes so far
 }
 
 #[binrw]

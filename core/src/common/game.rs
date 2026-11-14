@@ -1184,6 +1184,8 @@ pub enum EstateType {
     Ward = 255, // TODO: This might be internal to the server, but it does set the EstateType to 255 for FurnitureList packets.
 }
 
+/// Used for housing.
+/// See <https://github.com/aers/FFXIVClientStructs/blob/main/FFXIVClientStructs/FFXIV/Client/Game/Housing/OutdoorTerritory.cs>
 #[binrw]
 #[brw(repr = u8)]
 #[derive(Clone, Copy, Debug, Default)]

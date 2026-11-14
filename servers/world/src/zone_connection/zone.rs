@@ -11,9 +11,10 @@ use kawari::{
     },
     constants::OBFUSCATION_ENABLED_MODE,
     ipc::zone::{
-        ActorControlCategory, Condition, DutyFinderSetting, FurnitureList, House, HouseExterior,
-        HouseList, HouseStatus, HousingInteriorDetails, PlotSize, ServerZoneIpcData,
-        ServerZoneIpcSegment, WeatherChange, ZoneInit, ZoneInitFlags,
+        ActorControlCategory, ApartmentBuildingState, Condition, DutyFinderSetting, FurnitureList,
+        House, HouseExterior, HouseList, HouseStatus, HousingInteriorDetails, PlotSize,
+        ServerZoneIpcData, ServerZoneIpcSegment, WardDivision, WardDivisionInfo, WeatherChange,
+        ZoneInit, ZoneInitFlags,
     },
     packet::{ConnectionState, PacketSegment, ScramblerKeyGenerator, SegmentData, SegmentType},
 };
@@ -338,7 +339,10 @@ impl ZoneConnection {
                     ward: 0,
                     territory_type_id: lua_zone.zone_id,
                     world_id: self.config.world_id,
-                    subdivision: 257, // TODO: Figure out more about subdivisions
+                    division_info: WardDivisionInfo {
+                        apartment_building_state: ApartmentBuildingState::IsOwn,
+                        ward_division: WardDivision::MainDivision,
+                    },
                     houses,
                 },
             )))

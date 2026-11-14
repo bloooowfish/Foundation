@@ -62,6 +62,7 @@ pub struct WardMapInfo {
 }
 
 /// The current state of the apartment building.
+/// See <https://github.com/aers/FFXIVClientStructs/blob/main/FFXIVClientStructs/FFXIV/Client/Game/Housing/OutdoorTerritory.cs>
 #[binrw]
 #[brw(repr = u8)]
 #[derive(Clone, Copy, Debug, Default)]
