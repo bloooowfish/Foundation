@@ -1,5 +1,3 @@
-#![allow(unused_assignments)] // false positive caused by binrw
-
 use crate::common::HandlerId;
 use crate::ipc::zone::server::{ServerZoneIpcData, ServerZoneIpcSegment};
 use binrw::binrw;

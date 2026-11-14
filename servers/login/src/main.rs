@@ -19,7 +19,7 @@ use minijinja::value::Serde;
 use minijinja::{Environment, context, path_loader};
 use parking_lot::Mutex;
 use physis::resource::SqPackResource;
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 

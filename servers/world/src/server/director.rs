@@ -480,27 +480,6 @@ impl DirectorData {
         }
     }
 
-    #[allow(unused)] // TODO: temporary after refactor
-    pub fn variant_vote(&mut self, vote: u32) {
-        let mut run_script = || {
-            let mut lua_director = self.create_lua_director();
-            let err = self.lua.0.scope(|scope| {
-                let data = scope.create_userdata_ref_mut(&mut lua_director)?;
-
-                let func: Function = self.lua.0.globals().get("onVariantVote")?;
-
-                func.call::<()>((data, vote))?;
-
-                Ok(())
-            });
-            self.apply_lua_director(lua_director);
-            err
-        };
-        if let Err(err) = run_script() {
-            tracing::warn!("Syntax error during onVariantVote: {err:?}");
-        }
-    }
-
     pub fn is_gimmick_functional(&self, id: u32) -> bool {
         let run_script = || {
             self.lua.0.scope(|_| {

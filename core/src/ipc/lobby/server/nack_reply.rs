@@ -1,5 +1,3 @@
-#![allow(unused_variables)] // whoop binrw
-
 use binrw::binrw;
 
 use crate::common::{read_string, write_string};
