@@ -9,6 +9,8 @@ env:
   # There's no point in building release binaries for PRs, they are slower to build and no one is going to download them
   CARGO_PROFILE: ${{ github.ref == 'refs/heads/master' && '--release' || '' }}
   PROFILE_NAME: ${{ github.ref == 'refs/heads/master' && 'release' || 'debug' }}
+  # Don't create artifacts for PRs/branches by default. These are rarely used and consumes space on the CI.
+  CREATE_ARTIFACTS: ${{ github.ref == 'refs/heads/master' && 'true' || 'false' }}
 
 jobs:
   build-webassembly:
@@ -126,16 +128,19 @@ jobs:
       env:
         CI: 1
     - name: Build documentation
+      if: env.CREATE_ARTIFACTS == 'true'
       run: |
         mdbook build --dest-dir=docs-build ./docs
         mv docs docs-1
         mv docs-build docs
     - name: Prepare artifacts
+      if: env.CREATE_ARTIFACTS == 'true'
       run: |
         mv target/${{ matrix.target }}/${{ env.PROFILE_NAME }}/* .
         echo "${{ github.sha }}" >> version.txt
     - name: Archive artifacts
       uses: actions/upload-artifact@v3
+      if: env.CREATE_ARTIFACTS == 'true'
       with:
         name: kawari-${{ matrix.os_name }}-${{ matrix.target_name }}
         path: |
