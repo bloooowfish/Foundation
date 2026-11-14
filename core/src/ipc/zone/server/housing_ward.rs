@@ -95,6 +95,7 @@ pub struct WardDivisionInfo {
 #[binrw]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UpdateMapMarkersForWardDivision {
+    #[brw(pad_after = 1)]
     pub ward_division_info: WardDivisionInfo,
     #[brw(pad_after = 3)]
     pub info: [WardMapInfo; 30],
