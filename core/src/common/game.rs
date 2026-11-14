@@ -1184,6 +1184,17 @@ pub enum EstateType {
     Ward = 255, // TODO: This might be internal to the server, but it does set the EstateType to 255 for FurnitureList packets.
 }
 
+#[binrw]
+#[brw(repr = u8)]
+#[derive(Clone, Copy, Debug, Default)]
+pub enum PlotState {
+    #[default]
+    None = 0,
+    UnownedLand = 1,
+    OwnedLand = 2,
+    OwnedEstate = 3,
+}
+
 /// Land data used for housing.
 #[binrw]
 #[derive(Debug, Clone, Copy, Default)]

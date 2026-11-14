@@ -803,6 +803,10 @@ ServerZoneIpcType:
   comment: Sent to the client when their Fellowship Finder search yielded no results.
   opcode: 683
   size: 24
+- name: UpdateMapMarkersForWardDivision
+  comment: Sent to the client to inform them of housing map markers in the division opposite of the one they entered (since HouseList fills in the current division).
+  opcode: 773
+  size: 96
 ClientZoneIpcType:
 - name: InitRequest
   comment: Sent by the client when they successfully initialize with the server, and they need several bits of information (e.g. what zone to load.)

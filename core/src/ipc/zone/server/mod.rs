@@ -119,7 +119,7 @@ mod house_list;
 pub use house_list::{House, HouseExterior, HouseList, HouseStatus};
 
 mod housing_ward;
-pub use housing_ward::{HousingWardInfo, HousingWardSummaryItem};
+pub use housing_ward::{HousingWardInfo, HousingWardSummaryItem, UpdateMapMarkersForWardDivision};
 
 mod housing_interior_furniture;
 pub use housing_interior_furniture::{
@@ -1504,6 +1504,7 @@ pub enum ServerZoneIpcData {
         #[brw(pad_size_to = 4 * 376)]
         fellowships: Vec<FellowshipSearchInfo>,
     },
+    UpdateMapMarkersForWardDivision(UpdateMapMarkersForWardDivision),
 }
 
 #[cfg(test)]
