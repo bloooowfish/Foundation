@@ -3,6 +3,8 @@ use crate::{
     ipc::zone::server::{read_bool_from, write_bool_as},
 };
 use binrw::binrw;
+
+#[cfg(feature = "server")]
 use serde::{Deserialize, Serialize};
 
 #[binrw]
@@ -27,12 +29,13 @@ pub struct FurnitureList {
 
 // TODO: Figure out if `exterior_window_dye` needs to be serialized
 #[binrw]
-#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "server", derive(Deserialize, Serialize))]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct HousingInteriorDetails {
     /// This interior's window style.
     pub window_style: u16,
     /// Seems to only be affected by all-in-one exterior sets. In interiors, it has no noticeable visual effect. Perhaps a deprecated or abandoned field.
-    #[serde(default, skip_serializing)]
+    #[cfg_attr(feature = "server", serde(default, skip_serializing))]
     pub exterior_window_dye: u16, // From worstaquaplayer: v10.ExteriorStains[1] = a2->field_2;
     /// This interior's door style.
     pub door_style: u16,
@@ -70,7 +73,8 @@ pub struct HousingInteriorDetails {
 }
 
 #[binrw]
-#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "server", derive(Deserialize, Serialize))]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Furniture {
     /// Index into the FurnitureCatalogItemList sheet. If 0, no item is present in this entry. Therefore, this index needs to subtract 1 when indexing into the sheet!
     pub id: u16,

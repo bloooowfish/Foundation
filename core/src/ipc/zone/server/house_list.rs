@@ -3,6 +3,8 @@ use crate::{
     ipc::zone::{PlotSize, WardDivisionInfo},
 };
 use binrw::binrw;
+
+#[cfg(feature = "server")]
 use serde::{Deserialize, Serialize};
 
 #[binrw]
@@ -31,7 +33,8 @@ pub enum HouseStatus {
 
 /// Represents a House's "pattern ids", or in other words, what models make up the house's exterior. All values are an index into the HousingExterior Excel sheet.
 #[binrw]
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "server", derive(Deserialize, Serialize))]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct HouseExterior {
     /// The roof's style.
     pub roof_id: u16,
@@ -55,7 +58,8 @@ pub struct HouseExterior {
 
 /// Represents a HouseExterior's dyes/stains.
 #[binrw]
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "server", derive(Deserialize, Serialize))]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct HouseExteriorColors {
     /// The roof.
     pub roof: u8,
