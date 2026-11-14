@@ -54,7 +54,7 @@ pub enum FellowshipActivityTag {
 /// Represents housing appeal tags that players can set for their owned housing.
 #[binrw]
 #[brw(repr = u8)]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, FromRepr)]
 pub enum HousingAppealTag {
     #[default]
     None = 0,

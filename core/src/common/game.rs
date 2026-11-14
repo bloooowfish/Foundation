@@ -1167,6 +1167,23 @@ impl Default for HouseId {
     }
 }
 
+/// Used for housing.
+/// See <https://github.com/aers/FFXIVClientStructs/blob/main/FFXIVClientStructs/FFXIV/Client/Game/HousingManager.cs>
+#[binrw]
+#[brw(repr = u8)]
+#[derive(Clone, Copy, Debug, Default)]
+pub enum EstateType {
+    #[default]
+    FreeCompanyEstate = 0,
+    PrivateChambers = 1,
+    PersonalEstate = 2,
+    Unknown = 3,
+    SharedEstate = 4,
+    ApartmentBuilding = 5,
+    ApartmentRoom = 6,
+    Ward = 255, // TODO: This might be internal to the server, but it does set the EstateType to 255 for FurnitureList packets.
+}
+
 /// Land data used for housing.
 #[binrw]
 #[derive(Debug, Clone, Copy, Default)]

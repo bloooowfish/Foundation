@@ -1,12 +1,17 @@
-use crate::common::{HouseId, Position};
+use crate::{
+    common::{EstateType, HouseId, Position},
+    ipc::zone::server::{read_bool_from, write_bool_as},
+};
 use binrw::binrw;
+use serde::{Deserialize, Serialize};
 
 #[binrw]
 #[derive(Clone, Debug, Default)]
 pub struct FurnitureList {
     /// The LandId this list is for.
     pub id: HouseId,
-    pub unk1: u8,
+    /// The type of estate this furniture is for. This mainly seems to control visibility of the additional chambers door. Wards set it to 255.
+    pub unk1: EstateType,
     /// The current `index` out of `count` packets to be sent.
     pub index: u8,
     /// The number of these lists that will be sent.
@@ -20,19 +25,25 @@ pub struct FurnitureList {
     pub furniture: Vec<Furniture>,
 }
 
+// TODO: Figure out if the unknown fields need to be serialized or not
 #[binrw]
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct HousingInteriorDetails {
     /// This interior's window style.
     pub window_style: u16,
+    #[serde(default, skip_serializing)]
     pub unk1: u16, // Sapphire calls this "window color", but windows cannot be dyed?
     /// This interior's door style.
     pub door_style: u16,
     /// This interior door's dye colour. Index into the Stain Excel sheet.
-    pub door_stain: u16,
+    pub door_stain: u8,
     /// The light level in the interior. Note that this is actually described in terms of a level of *darkness*. When the client sets the UI light level to 5, the client will send value 0 in the ClientTrigger. Other examples: light level 1 will send 4, light level 2 will send 3, and so on.
     pub light_level: u8,
-    pub unk2: [u8; 3], // likely just padding
+    /// Enables SSAO for furnishings. 1 = enabled (unchecked), 0 = disabled (checked).
+    #[br(map = read_bool_from::<u8>)]
+    #[bw(map = write_bool_as::<u8>)]
+    #[brw(pad_after = 3)] // Likely padding/empty, observed only as zeroes so far
+    pub enable_ssao: bool,
     /// The ground floor's wall style. In an apartment, this along with ground_floor and ground_chandelier dictate what will decorate the apartment, leaving doors, windows, top floor and cellar all zeroes/blank.
     // TODO: It's unclear if these are pairs of u16s or just u32s.
     // NOTE: Be careful when experimenting with these values, as invalid combinations of u16s can crash the client, particularly if the interior is an apartment and top floor or cellar values are changed!
@@ -53,12 +64,14 @@ pub struct HousingInteriorDetails {
     pub cellar_floor: u32,
     /// The cellar's chandelier.
     pub cellar_chandelier: u32,
-    pub unk_interior: u32, // Unclear what this is, it can have data in mansions but not apartments or medium houses?
-    unk3: u32,             // Might just be padding, seen as zeroes so far
+    /// The mansion's grand chandelier ("options - ceiling light") in the foyer.
+    pub grand_chandelier: u32,
+    #[serde(default, skip_serializing)]
+    unk3: u32, // Might just be padding, seen as zeroes so far
 }
 
 #[binrw]
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Furniture {
     /// Index into the FurnitureCatalogItemList sheet. If 0, no item is present in this entry. Therefore, this index needs to subtract 1 when indexing into the sheet!
     pub id: u16,
