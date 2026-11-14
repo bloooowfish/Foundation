@@ -5,7 +5,7 @@ use crate::{
 use binrw::binrw;
 
 #[cfg(feature = "server")]
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 
 #[binrw]
 #[derive(Clone, Copy, Debug, Default)]

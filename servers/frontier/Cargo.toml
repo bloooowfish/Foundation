@@ -16,3 +16,4 @@ tower-http = { workspace = true }
 serde = { workspace = true }
 serde-xml-rs = { workspace = true }
 xml = { workspace = true }
+serde_derive = { workspace = true }

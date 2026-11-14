@@ -1,3 +1,5 @@
 disallowed-types = [
     { path = "std::sync::Mutex", reason = "Faster, and can also be used with the mlua crate.", replacement = "parking_lot::Mutex" },
+    { path = "serde::Deserialize", reason = "We use serde_derive, but serde is compiled with 'derive' from some random dependency that may change in the future.", replacement = "serde_derive::Deserialize" },
+    { path = "serde::Serialize", reason = "We use serde_derive, but serde is compiled with 'derive' from some random dependency that may change in the future.", replacement = "serde_derive::Serialize" },
 ]

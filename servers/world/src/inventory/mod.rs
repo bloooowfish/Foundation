@@ -15,7 +15,7 @@ use kawari::{
     config::get_config,
     ipc::zone::ItemInfo,
 };
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 
 use kawari::ipc::zone::ItemOperation;
 

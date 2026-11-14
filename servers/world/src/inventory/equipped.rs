@@ -1,5 +1,5 @@
 use physis::equipment::EquipSlot;
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 use strum::{EnumCount, IntoEnumIterator};
 
 use super::{Item, Storage};

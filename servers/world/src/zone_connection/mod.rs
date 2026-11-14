@@ -5,7 +5,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 
 use crate::{

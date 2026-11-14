@@ -1,5 +1,5 @@
 use crate::inventory::ContainerType;
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 
 use super::{Item, Storage};
 

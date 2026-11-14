@@ -3,7 +3,7 @@ use physis::{
     race::{Gender, Race, Tribe},
     savedata::chardat::CustomizeData,
 };
-use serde::Deserialize;
+use serde_derive::Deserialize;
 use std::io::Read;
 
 use crate::{

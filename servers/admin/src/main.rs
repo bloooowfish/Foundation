@@ -11,7 +11,7 @@ use kawari::web_static_dir;
 use minijinja::context;
 use minijinja::value::Serde;
 use minijinja::{Environment, path_loader};
-use serde::Deserialize;
+use serde_derive::Deserialize;
 use tower_http::services::ServeDir;
 
 fn setup_default_environment() -> Environment<'static> {

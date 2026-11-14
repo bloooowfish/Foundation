@@ -30,3 +30,4 @@ diesel = { workspace = true }
 diesel_migrations = { workspace = true }
 async-trait = { workspace = true }
 glam = { workspace = true }
+serde_derive = { workspace = true }

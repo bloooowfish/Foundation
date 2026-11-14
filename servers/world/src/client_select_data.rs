@@ -1,6 +1,6 @@
 use kawari::common::EquipDisplayFlag;
 use physis::savedata::chardat::CustomizeData;
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use strum_macros::FromRepr;
 

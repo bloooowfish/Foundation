@@ -1,6 +1,6 @@
 use kawari::{common::ITEM_CONDITION_MAX, ipc::zone::ItemInfo};
 
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 
 use crate::ItemRow;
 

@@ -3,7 +3,7 @@ use diesel::prelude::*;
 use diesel::{Connection, SqliteConnection};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use kawari::common::BasicServiceAccountData;
-use serde::Serialize;
+use serde_derive::Serialize;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 

@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
 };
 use kawari::config::get_config;
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 use xml::EmitterConfig;
 
