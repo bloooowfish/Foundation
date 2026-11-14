@@ -101,10 +101,10 @@ icarus = { git = "https://github.com/redstrate/icarus", branch = "ver/2026.09.01
 md5 = { version = "0.8", features = ["std"], default-features = false }
 
 # Used for our databases
-diesel = { version = "2.3", features = ["sqlite", "returning_clauses_for_sqlite_3_35", "serde_json", "32-column-tables"], default-features = false }
+diesel = { version = "2.4", features = ["sqlite", "returning_clauses_for_sqlite_3_35", "serde_json", "32-column-tables"], default-features = false }
 
 # Used for embedding our database migrations
-diesel_migrations = { version = "2.3", default-features = false }
+diesel_migrations = { version = "2.4", default-features = false }
 
 # For sqlite support (we specify * here because diesel selects the version for us)
 libsqlite3-sys = { version = "*", features = ["bundled"], default-features = false }
