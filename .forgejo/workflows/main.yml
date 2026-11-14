@@ -13,7 +13,7 @@ env:
 jobs:
   build-webassembly:
     name: "Build (WebAssembly)"
-    runs-on: docker
+    runs-on: any-arch
     # Skip running on PR events that come from the same repository, it will just duplicate the branch action
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
 
@@ -38,7 +38,7 @@ jobs:
 
   build:
     name: "Build (${{ matrix.os_name }} ${{ matrix.target_name }})"
-    runs-on: docker
+    runs-on: ${{ matrix.runs-on }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
 
     strategy:
@@ -47,12 +47,18 @@ jobs:
         - target: x86_64-unknown-linux-gnu
           target_name: x86_64
           os_name: linux
+          runs-on: x86-64
+          runs-tests: true
         - target: aarch64-unknown-linux-gnu
           target_name: aarch64
           os_name: linux
+          runs-on: arm64
+          runs-tests: false
         - target: x86_64-pc-windows-gnu
           target_name: x86_64
           os_name: windows
+          runs-on: x86-64
+          runs-tests: false
 
     steps:
     - uses: actions/checkout@v6
@@ -115,7 +121,7 @@ jobs:
       if: matrix.target == 'x86_64-unknown-linux-gnu'
       run: cargo fmt --check
     - name: Run tests
-      if: matrix.target == 'x86_64-unknown-linux-gnu'
+      if: matrix.runs-tests
       run: cargo test ${{ env.CARGO_PROFILE }} --target ${{ matrix.target }} --features oodle
       env:
         CI: 1
@@ -170,7 +176,7 @@ jobs:
 
   deploy:
     name: "Deploy"
-    runs-on: docker
+    runs-on: any-arch
     needs: build
     if: github.ref == 'refs/heads/master'
 
