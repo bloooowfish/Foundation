@@ -919,6 +919,7 @@ dependencies = [
  "glam",
  "icarus",
  "kawari",
+ "libsqlite3-sys",
  "mlua",
  "parking_lot",
  "physis",

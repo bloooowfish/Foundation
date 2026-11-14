@@ -31,3 +31,4 @@ diesel_migrations = { workspace = true }
 async-trait = { workspace = true }
 glam = { workspace = true }
 serde_derive = { workspace = true }
+libsqlite3-sys = { workspace = true }
