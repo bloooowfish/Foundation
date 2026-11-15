@@ -154,12 +154,11 @@ impl Instance {
             explorer_mode = content_settings.contains(DutyFinderSetting::EXPLORER_MODE);
             allow_special_fates = true; // Needed for Occult Crescent I guess
 
-            Self::create_instance_for_content(
+            Self::setup_instance_for_content(
                 &mut instance,
                 content_finder_condition_id,
                 content_settings,
                 game_data,
-                lua,
             );
         }
 
@@ -249,87 +248,88 @@ impl Instance {
         instance
     }
 
-    fn create_instance_for_content(
+    fn setup_instance_for_content(
         instance: &mut Instance,
         content_finder_condition_id: u16,
         content_settings: DutyFinderSetting,
         game_data: &mut GameData,
-        _lua: &KawariLua,
     ) {
         if let Some(director_type) = HandlerType::from_intended_use(instance.zone.intended_use) {
             instance.content_id = game_data
                 .find_content_for_content_finder_id(content_finder_condition_id)
                 .unwrap_or_default();
 
-            instance.duration = Some(Duration::from_mins(
-                game_data
-                    .find_content_time_limit(instance.content_id)
-                    .unwrap_or_default() as u64,
-            ));
+            if let Some(time_limit) = game_data.find_content_time_limit(instance.content_id) {
+                instance.duration = Some(Duration::from_mins(time_limit as u64));
+            }
 
             let id = HandlerId::new(director_type, instance.content_id);
 
             // Setup Lua state for our director
             let lua = KawariLua::new();
 
-            // Find the script for this content
-            let content_short_name = game_data
-                .get_content_short_name(content_finder_condition_id)
-                .unwrap();
-            let file_name = get_config()
-                .filesystem
-                .locate_script_file(&format!("content/{content_short_name}.lua"));
-
             let mut director = DirectorData {
                 id,
                 ..Default::default()
             };
 
-            let result = std::fs::read(&file_name);
-            if let Err(err) = result {
-                tracing::warn!(
-                    "Failed to load {}: {:?} instance content won't be scripted!",
-                    file_name,
-                    err
-                );
-            } else {
-                let file = result.unwrap();
+            // Find the script for this content
+            if let Some(content_short_name) =
+                game_data.get_content_short_name(content_finder_condition_id)
+            {
+                let file_name = get_config()
+                    .filesystem
+                    .locate_script_file(&format!("content/{content_short_name}.lua"));
 
-                if let Err(err) = lua
-                    .0
-                    .load(file)
-                    .set_name("@".to_string() + &file_name)
-                    .exec()
-                {
-                    tracing::warn!(
-                        "Syntax error in {}: {:?} instance content won't be scripted!",
-                        file_name,
-                        err
-                    );
-                } else {
-                    director.lua = lua;
+                let result = std::fs::read(&file_name);
+                match result {
+                    Ok(file) => {
+                        if let Err(err) = lua
+                            .0
+                            .load(file)
+                            .set_name("@".to_string() + &file_name)
+                            .exec()
+                        {
+                            tracing::warn!(
+                                "Syntax error in {}: {:?} instance content won't be scripted!",
+                                file_name,
+                                err
+                            );
+                        } else {
+                            director.lua = lua;
 
-                    // Call into the onSetup function before returning, as we need the flag to be initialized before any players change zones.
-                    director.setup();
+                            // Call into the onSetup function before returning, as we need the flag to be initialized before any players change zones.
+                            director.setup();
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "Failed to load {}: {:?} instance content won't be scripted!",
+                            file_name,
+                            err
+                        );
+                    }
                 }
+            } else {
+                tracing::warn!(
+                    "Could not find short name for content finder condition {content_finder_condition_id}?"
+                );
             }
-
             instance.directors.push(director);
         } else {
             tracing::warn!(
-                "No director created for TerritoryIntendedUse {}! If this is unexpected, please report it.",
+                "No director for TerritoryIntendedUse {}? If this is unexpected, please report it as a bug.",
                 instance.zone.intended_use
             );
         }
 
         // Ensure we have the entrance set correctly
-        let entrance_id = game_data
-            .get_content_entrance_id(content_finder_condition_id)
-            .expect("Failed to find entrance ID?");
-        for range in &mut instance.zone.map_ranges {
-            if range.instance_id == entrance_id {
-                range.entrance = true;
-                break;
+        if let Some(entrance_id) = game_data.get_content_entrance_id(content_finder_condition_id) {
+            for range in &mut instance.zone.map_ranges {
+                if range.instance_id == entrance_id {
+                    range.entrance = true;
+                    break;
+                }
             }
         }
 
