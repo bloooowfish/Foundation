@@ -2074,7 +2074,7 @@ async fn process_packet(
                             exit_box, position, ..
                         } => {
                             tracing::info!(
-                                "Character entered {exit_box} with a position of {position:#?}!"
+                                "Character entered exit box {exit_box} with a position of {position:#?}!"
                             );
 
                             connection

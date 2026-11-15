@@ -1232,7 +1232,7 @@ pub fn handle_zone_messages(
 
                 destination_instance_id = new_exit_box.destination_instance_id;
             } else {
-                tracing::warn!("Actor isn't in the instance it was expected in. This is a bug!");
+                tracing::warn!("Couldn't find the instance for actor {actor_id}?!");
                 return true;
             }
 
