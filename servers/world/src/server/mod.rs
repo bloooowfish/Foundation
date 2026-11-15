@@ -51,7 +51,8 @@ use kawari::{
     ipc::zone::{
         ActionRequest, ActionType, ActorControlCategory, ClientTriggerCommand, ClientTriggerTarget,
         Condition, Conditions, EnmityList, Hater, HaterList, PlayerEnmity, PrepareZoning,
-        PrepareZoningFlag, ServerZoneIpcData, ServerZoneIpcSegment, WaymarkPreset,
+        PrepareZoningFlag, ServerNoticeMessage, ServerZoneIpcData, ServerZoneIpcSegment,
+        WaymarkPreset,
     },
 };
 
@@ -98,12 +99,12 @@ struct WorldServer {
 
 impl WorldServer {
     /// Ensures an instance exists, and creates one if not found.
-    fn ensure_exists(
+    fn ensure_exists_query(
         &mut self,
-        zone_id: u16,
-        query: InstanceQuery,
         game_data: &mut GameData,
         lua: &KawariLua,
+        zone_id: u16,
+        query: InstanceQuery,
     ) -> &mut Instance {
         // create a new instance if necessary
         if !self
@@ -119,6 +120,45 @@ impl WorldServer {
             .iter_mut()
             .find(|x| x.zone.id == zone_id && x.query == query)
             .unwrap()
+    }
+
+    /// Safer version of `ensure_exists_query` when you just need to enter an area.
+    ///
+    /// This checks if the zone is valid - and if not - will force the player to a safe area.
+    fn ensure_exists(
+        &mut self,
+        network: &mut NetworkState,
+        game_data: &mut GameData,
+        lua: &KawariLua,
+        from_actor_id: ObjectId,
+        mut zone_id: u16,
+        position: &mut Position,
+        rotation: &mut f32,
+    ) -> &mut Instance {
+        let query = game_data
+            .determine_default_query(zone_id)
+            .unwrap_or_else(|| {
+                let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::ServerNoticeMessage(
+                    ServerNoticeMessage {
+                        message: "Moved you to a safe area to prevent a crash!".to_owned(),
+                        ..Default::default()
+                    },
+                ));
+
+                network.send_to_by_actor_id(
+                    from_actor_id,
+                    FromServer::PacketSegment(ipc, from_actor_id),
+                    DestinationNetwork::ZoneClients,
+                );
+
+                // If the zone is invalid or any reason, reset back to a known good position and zone ID
+                zone_id = 132;
+                *position = Default::default();
+                *rotation = Default::default();
+
+                InstanceQuery::Public
+            });
+        self.ensure_exists_query(game_data, lua, zone_id, query)
     }
 
     /// Finds the instance associated with an actor, or returns None if they are not found.
@@ -1108,24 +1148,26 @@ pub async fn server_main_loop(
                     from_id,
                     from_actor_id,
                     zone_id,
-                    position,
-                    rotation,
+                    mut position,
+                    mut rotation,
                     city_state_opening,
                 ) => {
                     tracing::info!("Player {from_id:?} is spawning into zone {zone_id}....");
 
                     let mut network = network.lock();
                     let mut data = data.lock();
+                    let mut game_data = game_data.lock();
+                    let lua = lua.lock();
 
-                    // create a new instance if necessary
-                    let instance;
-                    {
-                        let mut game_data = game_data.lock();
-                        let lua = lua.lock();
-                        let query = game_data.determine_default_query(zone_id).unwrap();
-                        instance = data.ensure_exists(zone_id, query, &mut game_data, &lua);
-                    }
-
+                    let instance = data.ensure_exists(
+                        &mut network,
+                        &mut game_data,
+                        &lua,
+                        from_actor_id,
+                        zone_id,
+                        &mut position,
+                        &mut rotation,
+                    );
                     instance.insert_empty_actor(from_actor_id);
 
                     let exit_position;
@@ -1153,7 +1195,7 @@ pub async fn server_main_loop(
 
                     // tell the client to load into the zone
                     let msg = FromServer::ChangeZone(
-                        zone_id,
+                        instance.zone.id,
                         instance.content_finder_condition_id(),
                         instance.weather_id,
                         exit_position,
@@ -2206,14 +2248,14 @@ pub async fn server_main_loop(
                         // then find or create a new instance with the zone id and content finder condition
                         let mut game_data = game_data.lock();
                         let lua = lua.lock();
-                        let target_instance = data.ensure_exists(
+                        let target_instance = data.ensure_exists_query(
+                            &mut game_data,
+                            &lua,
                             zone_id,
                             InstanceQuery::InstancedContent {
                                 content_finder_condition_id,
                                 content_settings,
                             },
-                            &mut game_data,
-                            &lua,
                         );
 
                         for (client_id, actor_id) in &actor_ids {
@@ -2236,8 +2278,8 @@ pub async fn server_main_loop(
                     from_client_id,
                     from_actor_id,
                     old_zone_id,
-                    old_position,
-                    old_rotation,
+                    mut old_position,
+                    mut old_rotation,
                 ) => {
                     let mut data = data.lock();
                     let mut network = network.lock();
@@ -2250,14 +2292,21 @@ pub async fn server_main_loop(
                     {
                         let mut game_data = game_data.lock();
                         let lua = lua.lock();
-                        let query = game_data.determine_default_query(old_zone_id).unwrap();
-                        instance = data.ensure_exists(old_zone_id, query, &mut game_data, &lua);
+                        instance = data.ensure_exists(
+                            &mut network,
+                            &mut game_data,
+                            &lua,
+                            from_actor_id,
+                            old_zone_id,
+                            &mut old_position,
+                            &mut old_rotation,
+                        );
                     }
 
                     instance.insert_empty_actor(from_actor_id);
 
                     let msg = FromServer::ChangeZone(
-                        old_zone_id,
+                        instance.zone.id,
                         instance.content_finder_condition_id(),
                         instance.weather_id,
                         old_position,

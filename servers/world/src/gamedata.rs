@@ -1502,14 +1502,6 @@ impl GameData {
         row.CooldownGroup
     }
 
-    /// Checks if this zone is associated with a ContentFinderCondition.
-    pub fn is_zone_associated_with_content(&mut self, zone_id: u16) -> bool {
-        let Some(row) = self.territory_type_sheet.row(zone_id.into()) else {
-            return false;
-        };
-        row.ContentFinderCondition != 0
-    }
-
     /// Tells us if this item belongs to the Seasonal Miscellany or Miscellany categories.
     pub fn item_is_misc(&mut self, id: u32) -> bool {
         let Some(row) = self.item_sheet.row(id) else {
@@ -1520,14 +1512,6 @@ impl GameData {
         let is_misc = row.ItemUICategory == 61;
 
         is_seasonal_misc || is_misc
-    }
-
-    /// Checks if this zone is valid.
-    pub fn is_zone_valid(&mut self, zone_id: u16) -> bool {
-        let Some(row) = self.territory_type_sheet.row(zone_id.into()) else {
-            return false;
-        };
-        !row.Bg.is_empty()
     }
 
     /// Returns the emote mode (if any), really only relevant for persistent/loopable emotes.
@@ -1825,6 +1809,10 @@ impl GameData {
     /// If it returns `None`, that means the zone is invalid and the player needs to be reset.
     pub fn determine_default_query(&self, territory_type_id: u16) -> Option<InstanceQuery> {
         let row = self.territory_type_sheet.row(territory_type_id.into())?;
+        // Don't allow players to spawn back into dungeons for now.
+        if row.ContentFinderCondition != 0 {
+            return None;
+        }
         if is_private_area(
             TerritoryIntendedUse::from_repr(row.TerritoryIntendedUse).unwrap_or_default(),
         ) {

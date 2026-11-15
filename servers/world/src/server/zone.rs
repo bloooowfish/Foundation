@@ -864,12 +864,20 @@ fn begin_change_zone<'a>(
             remove_actor_from_instance(data, network, actor_id);
         }
 
-        let query = game_data
-            .determine_default_query(destination_zone_id)
-            .unwrap();
+        // TODO: use these
+        let mut position = Default::default();
+        let mut rotation = Default::default();
 
         // then find or create a new instance with the zone id
-        let instance = data.ensure_exists(destination_zone_id, query, game_data, lua);
+        let instance = data.ensure_exists(
+            network,
+            game_data,
+            lua,
+            actor_id,
+            destination_zone_id,
+            &mut position,
+            &mut rotation,
+        );
         // Insert an empty actor that will be filled later
         instance.insert_empty_actor(actor_id);
 
