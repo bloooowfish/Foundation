@@ -69,11 +69,13 @@ use physis::savedata::chardat::CustomizeData;
 
 use kawari::common::{
     ActionCategory, FateRule, GimmickAccessorType, InstanceContentType, PublicContentType,
-    TerritoryIntendedUse, get_aether_current_comp_flg_set_to_screenimage,
+    TerritoryIntendedUse, get_aether_current_comp_flg_set_to_screenimage, is_private_area,
 };
 use kawari::common::{LegacyEquipmentModelId, WeaponModelId, timestamp_secs};
 use kawari::config::get_config;
 use strum_macros::FromRepr;
+
+use crate::InstanceQuery;
 
 /// Convenient methods built on top of Physis to access data relevant to the server
 #[derive(Clone)]
@@ -1816,6 +1818,20 @@ impl GameData {
     /// Returns this GATE's information.
     pub fn get_gate(&mut self, id: u32) -> Option<GFATERow> {
         self.gfate_sheet.row(id)
+    }
+
+    /// Determines a suitable InstanceQuery backwards from a TerritoryTypeId.
+    ///
+    /// If it returns `None`, that means the zone is invalid and the player needs to be reset.
+    pub fn determine_default_query(&self, territory_type_id: u16) -> Option<InstanceQuery> {
+        let row = self.territory_type_sheet.row(territory_type_id.into())?;
+        if is_private_area(
+            TerritoryIntendedUse::from_repr(row.TerritoryIntendedUse).unwrap_or_default(),
+        ) {
+            Some(InstanceQuery::UniqueInstance)
+        } else {
+            Some(InstanceQuery::Public)
+        }
     }
 }
 

@@ -20,8 +20,7 @@ use crate::{
         },
         chat::handle_chat_messages,
         director::{
-            DirectorData, director_tick, handle_director_messages, handle_director_trigger,
-            send_director_vars,
+            director_tick, handle_director_messages, handle_director_trigger, send_director_vars,
         },
         effect::{handle_effect_messages, remove_effect, send_effects_list},
         fate::{ended_fate, fate_tick, start_fate, start_next_fate, unk10_fate},
@@ -43,16 +42,15 @@ use crate::{
 };
 use kawari::{
     common::{
-        AUTO_ATTACK_RATE, CharacterMode, DEAD_DESPAWN_TIME, HandlerId, HandlerType,
-        MAX_SPAWNED_ACTORS, MAX_SPAWNED_OBJECTS, MOB_RESPAWN_TIME, ObjectId, ObjectTypeId,
-        ObjectTypeKind, Position, WarpType, determine_initial_pop_range, euler_to_direction,
-        is_private_area,
+        AUTO_ATTACK_RATE, CharacterMode, DEAD_DESPAWN_TIME, MAX_SPAWNED_ACTORS,
+        MAX_SPAWNED_OBJECTS, MOB_RESPAWN_TIME, ObjectId, ObjectTypeId, ObjectTypeKind, Position,
+        WarpType, determine_initial_pop_range, euler_to_direction,
     },
     config::get_config,
     ipc::zone::{
         ActionRequest, ActionType, ActorControlCategory, ClientTriggerCommand, ClientTriggerTarget,
-        Condition, Conditions, DutyFinderSetting, EnmityList, Hater, HaterList, PlayerEnmity,
-        PrepareZoning, PrepareZoningFlag, ServerZoneIpcData, ServerZoneIpcSegment, WaymarkPreset,
+        Condition, Conditions, EnmityList, Hater, HaterList, PlayerEnmity, PrepareZoning,
+        PrepareZoningFlag, ServerZoneIpcData, ServerZoneIpcSegment, WaymarkPreset,
     },
 };
 
@@ -64,6 +62,7 @@ mod chat;
 mod director;
 mod effect;
 mod instance;
+pub use instance::InstanceQuery;
 mod linkshell;
 mod network;
 mod party;
@@ -100,38 +99,24 @@ impl WorldServer {
     fn ensure_exists(
         &mut self,
         zone_id: u16,
+        query: InstanceQuery,
         game_data: &mut GameData,
         lua: &KawariLua,
     ) -> &mut Instance {
-        let is_public_instance;
-        if let Some(intended_use) = game_data.get_intended_use(zone_id as u32) {
-            is_public_instance = !is_private_area(intended_use);
-        } else {
-            is_public_instance = true; // Fall back to assuming it's public I guess
+        // create a new instance if necessary
+        if !self
+            .instances
+            .iter()
+            .any(|x| x.zone.id == zone_id && x.query == query)
+        {
+            self.instances
+                .push(Instance::new(zone_id, query, game_data, lua));
         }
 
-        if is_public_instance {
-            // create a new instance if necessary
-            if !self
-                .instances
-                .iter()
-                .any(|x| x.zone.id == zone_id && x.content_finder_condition_id == 0)
-            {
-                tracing::info!("Creating new public instance for zone {zone_id}!");
-                self.instances
-                    .push(Instance::new(zone_id, game_data, lua, false, false));
-            }
-
-            self.instances
-                .iter_mut()
-                .find(|x| x.zone.id == zone_id && x.content_finder_condition_id == 0)
-                .unwrap()
-        } else {
-            tracing::info!("Creating new private instance for zone {zone_id}!");
-            self.instances
-                .push(Instance::new(zone_id, game_data, lua, false, false));
-            self.instances.last_mut().unwrap()
-        }
+        self.instances
+            .iter_mut()
+            .find(|x| x.zone.id == zone_id && x.query == query)
+            .unwrap()
     }
 
     /// Finds the instance associated with an actor, or returns None if they are not found.
@@ -146,123 +131,6 @@ impl WorldServer {
         self.instances
             .iter_mut()
             .find(|instance| instance.actors.contains_key(&actor_id))
-    }
-
-    fn create_instance_for_content(
-        &mut self,
-        zone_id: u16,
-        content_finder_condition: u16,
-        content_settings: DutyFinderSetting,
-        game_data: &mut GameData,
-        lua: &KawariLua,
-    ) -> Option<&mut Instance> {
-        tracing::info!(
-            "Creating new instance for content {content_finder_condition} (zone {zone_id})!"
-        );
-
-        let mut instance = Instance::new(
-            zone_id,
-            game_data,
-            lua,
-            content_settings.contains(DutyFinderSetting::EXPLORER_MODE),
-            true, // Needed for Occult Crescent I guess
-        );
-        instance.content_finder_condition_id = content_finder_condition;
-
-        if let Some(director_type) = HandlerType::from_intended_use(instance.zone.intended_use) {
-            instance.content_id = game_data
-                .find_content_for_content_finder_id(instance.content_finder_condition_id)
-                .unwrap();
-            instance.duration = Some(Duration::from_mins(
-                game_data
-                    .find_content_time_limit(instance.content_id)
-                    .unwrap_or_default() as u64,
-            ));
-
-            let id = HandlerId::new(director_type, instance.content_id);
-
-            // Setup Lua state for our director
-            let lua = KawariLua::new();
-
-            // Find the script for this content
-            let content_short_name = game_data
-                .get_content_short_name(content_finder_condition)
-                .unwrap();
-            let file_name = get_config()
-                .filesystem
-                .locate_script_file(&format!("content/{content_short_name}.lua"));
-
-            let mut director = DirectorData {
-                id,
-                ..Default::default()
-            };
-
-            let result = std::fs::read(&file_name);
-            if let Err(err) = result {
-                tracing::warn!(
-                    "Failed to load {}: {:?} instance content won't be scripted!",
-                    file_name,
-                    err
-                );
-            } else {
-                let file = result.unwrap();
-
-                if let Err(err) = lua
-                    .0
-                    .load(file)
-                    .set_name("@".to_string() + &file_name)
-                    .exec()
-                {
-                    tracing::warn!(
-                        "Syntax error in {}: {:?} instance content won't be scripted!",
-                        file_name,
-                        err
-                    );
-                } else {
-                    director.lua = lua;
-
-                    // Call into the onSetup function before returning, as we need the flag to be initialized before any players change zones.
-                    director.setup();
-                }
-            }
-
-            instance.directors.push(director);
-        } else {
-            tracing::warn!(
-                "No director created for TerritoryIntendedUse {}! If this is unexpected, please report it.",
-                instance.zone.intended_use
-            );
-        }
-
-        // Ensure we have the entrance set correctly
-        let entrance_id = game_data
-            .get_content_entrance_id(content_finder_condition)
-            .expect("Failed to find entrance ID?");
-        for range in &mut instance.zone.map_ranges {
-            if range.instance_id == entrance_id {
-                range.entrance = true;
-                break;
-            }
-        }
-
-        instance.content_settings = Some(content_settings);
-
-        // Set up level sync
-        let needs_sync = {
-            if content_settings.contains(DutyFinderSetting::UNRESTRICTED_PARTY) {
-                content_settings.contains(DutyFinderSetting::LEVEL_SYNC)
-            } else {
-                !content_settings.contains(DutyFinderSetting::EXPLORER_MODE)
-            }
-        };
-        if needs_sync {
-            instance.synced_level =
-                game_data.find_content_synced_level(instance.content_finder_condition_id);
-        }
-
-        self.instances.push(instance);
-
-        self.instances.last_mut()
     }
 
     fn find_actor_by_name(&self, name: &str) -> ObjectId {
@@ -1252,7 +1120,8 @@ pub async fn server_main_loop(
                     {
                         let mut game_data = game_data.lock();
                         let lua = lua.lock();
-                        instance = data.ensure_exists(zone_id, &mut game_data, &lua);
+                        let query = game_data.determine_default_query(zone_id).unwrap();
+                        instance = data.ensure_exists(zone_id, query, &mut game_data, &lua);
                     }
 
                     instance.insert_empty_actor(from_actor_id);
@@ -1283,7 +1152,7 @@ pub async fn server_main_loop(
                     // tell the client to load into the zone
                     let msg = FromServer::ChangeZone(
                         zone_id,
-                        instance.content_finder_condition_id,
+                        instance.content_finder_condition_id(),
                         instance.weather_id,
                         exit_position,
                         exit_rotation,
@@ -2296,12 +2165,17 @@ pub async fn server_main_loop(
                     let mut network = network.lock();
                     network.to_remove_chat.push(from_id);
                 }
-                ToServer::JoinContent(from_id, from_actor_id, content_id, settings) => {
+                ToServer::JoinContent(
+                    from_id,
+                    from_actor_id,
+                    content_finder_condition_id,
+                    content_settings,
+                ) => {
                     // For now, just send them to do the zone if they do anything
                     let zone_id;
                     {
                         let mut game_data = game_data.lock();
-                        zone_id = game_data.find_zone_for_content(content_id);
+                        zone_id = game_data.find_zone_for_content(content_finder_condition_id);
                     }
 
                     let mut actor_ids = Vec::new();
@@ -2330,27 +2204,27 @@ pub async fn server_main_loop(
                         // then find or create a new instance with the zone id and content finder condition
                         let mut game_data = game_data.lock();
                         let lua = lua.lock();
-                        if let Some(target_instance) = data.create_instance_for_content(
+                        let target_instance = data.ensure_exists(
                             zone_id,
-                            content_id,
-                            settings,
+                            InstanceQuery::InstancedContent {
+                                content_finder_condition_id,
+                                content_settings,
+                            },
                             &mut game_data,
                             &lua,
-                        ) {
-                            for (client_id, actor_id) in &actor_ids {
-                                target_instance.insert_empty_actor(*actor_id);
+                        );
 
-                                change_zone_warp_to_entrance(
-                                    &mut network,
-                                    &mut game_data,
-                                    target_instance,
-                                    true,
-                                    *client_id,
-                                    WarpType::Normal,
-                                );
-                            }
-                        } else {
-                            tracing::warn!("Failed to create a new instance for content?!");
+                        for (client_id, actor_id) in &actor_ids {
+                            target_instance.insert_empty_actor(*actor_id);
+
+                            change_zone_warp_to_entrance(
+                                &mut network,
+                                &mut game_data,
+                                target_instance,
+                                true,
+                                *client_id,
+                                WarpType::Normal,
+                            );
                         }
                     } else {
                         tracing::warn!("Failed to find zone id for content?!");
@@ -2366,22 +2240,23 @@ pub async fn server_main_loop(
                     let mut data = data.lock();
                     let mut network = network.lock();
 
+                    // Remove from content
                     remove_actor_from_instance(&mut data, &mut network, from_actor_id);
 
-                    // create a new instance if necessary
+                    // Find instance of the old zone
                     let instance;
                     {
                         let mut game_data = game_data.lock();
                         let lua = lua.lock();
-                        instance = data.ensure_exists(old_zone_id, &mut game_data, &lua);
+                        let query = game_data.determine_default_query(old_zone_id).unwrap();
+                        instance = data.ensure_exists(old_zone_id, query, &mut game_data, &lua);
                     }
 
                     instance.insert_empty_actor(from_actor_id);
 
-                    // tell the client to load into the zone
                     let msg = FromServer::ChangeZone(
                         old_zone_id,
-                        instance.content_finder_condition_id,
+                        instance.content_finder_condition_id(),
                         instance.weather_id,
                         old_position,
                         old_rotation,

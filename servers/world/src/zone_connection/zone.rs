@@ -500,6 +500,8 @@ impl ZoneConnection {
 
     /// Ensure the player is placed in a valid zone, and if they aren't they are teleported back to their homepoint.
     pub async fn ensure_valid_zone(&mut self) {
+        // TODO: Remove this, it should be handled in the new InstanceQuery system
+
         let zone_id = self.player_data.volatile.zone_id;
 
         // If the player isn't in a valid zone, or in instanced content (both crash the game) then we need to reset them.

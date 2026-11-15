@@ -1034,8 +1034,7 @@ pub fn handle_director_messages(
             let mut network = network.lock();
             for director in &instance.directors {
                 let flags = if instance
-                    .content_settings
-                    .unwrap_or_default()
+                    .content_settings()
                     .contains(DutyFinderSetting::EXPLORER_MODE)
                     && director.id.handler_type().is_content_director()
                 {
@@ -1085,10 +1084,7 @@ pub fn handle_director_messages(
                         *from_actor_id,
                         FromServer::PlayInitialCutscene(
                             instance.duration.unwrap_or_default().as_secs() as u32,
-                            DutyOption::from_content_flags(
-                                instance.content_settings.unwrap_or_default(),
-                            )
-                            .bits(),
+                            DutyOption::from_content_flags(instance.content_settings()).bits(),
                         ),
                         DestinationNetwork::ZoneClients,
                     );

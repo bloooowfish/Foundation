@@ -22,7 +22,7 @@ use crate::{
 use kawari::{
     common::{
         CharacterMode, DistanceRange, ENTRANCE_CIRCLE_IDS, FateState, HandlerId, HandlerType,
-        MAXIMUM_FATES, MOB_WANDER_TIME, ObjectId, Position,
+        HouseId, MAXIMUM_FATES, MOB_WANDER_TIME, ObjectId, Position,
     },
     config::{Config, get_config},
     ipc::zone::{
@@ -101,6 +101,63 @@ impl PartialEq for QueuedTask {
     }
 }
 
+/// Query used to identify and create instances.
+///
+/// These parameters are *in addition* to the territory type ID.
+#[derive(Debug, Default, Clone, Copy)]
+pub enum InstanceQuery {
+    /// Shared between all players.
+    #[default]
+    Public,
+    /// Used for private instances of areas, e.g. the many areas used exclusively for MSQ.
+    UniqueInstance,
+    /// Used for instances of areas like dungeons that may be shared between many players.
+    InstancedContent {
+        /// The content finder condition associated with this instance.
+        content_finder_condition_id: u16,
+        /// The duty finder settings applied to this instance.
+        content_settings: DutyFinderSetting,
+    },
+    /// Instance of a player's house.
+    House { house_id: HouseId },
+    /// Instance of a housing ward.
+    Ward { ward_id: u32 },
+}
+
+impl PartialEq for InstanceQuery {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::InstancedContent {
+                    content_finder_condition_id: l_content_finder_condition_id,
+                    content_settings: l_content_settings,
+                },
+                Self::InstancedContent {
+                    content_finder_condition_id: r_content_finder_condition_id,
+                    content_settings: r_content_settings,
+                },
+            ) => {
+                l_content_finder_condition_id == r_content_finder_condition_id
+                    && l_content_settings == r_content_settings
+            }
+            (
+                Self::House {
+                    house_id: l_house_id,
+                },
+                Self::House {
+                    house_id: r_house_id,
+                },
+            ) => l_house_id == r_house_id,
+            (Self::Ward { ward_id: l_ward_id }, Self::Ward { ward_id: r_ward_id }) => {
+                l_ward_id == r_ward_id
+            }
+            // Unique instances never match against each other.
+            (Self::UniqueInstance, Self::UniqueInstance) => false,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Instance {
     /// List of spawned actors.
@@ -111,8 +168,8 @@ pub struct Instance {
     pub zone: Zone,
     /// The zone's current weather.
     pub weather_id: u16,
-    /// The content finder condition associated with this instance.
-    pub content_finder_condition_id: u16,
+    /// The query used to create this instance.
+    pub query: InstanceQuery,
     /// The content ID for the content finder condition, if applicable.
     pub content_id: u16,
     /// If Some, then this is the path of the navmesh we need to generate.
@@ -127,8 +184,6 @@ pub struct Instance {
     pub fates: Vec<FateInstance>,
     /// List of FATEs that are able to spawn.
     pub candiate_fates: Vec<u32>,
-    /// The duty finder settings applied to this instance, if applicable.
-    pub content_settings: Option<DutyFinderSetting>,
     /// The maximum synced level for this content, if applicable.
     pub synced_level: Option<u8>,
     /// How long this content lasts for, if applicable.
@@ -136,18 +191,34 @@ pub struct Instance {
 }
 
 impl Instance {
-    pub fn new(
-        id: u16,
-        game_data: &mut GameData,
-        lua: &KawariLua,
-        explorer_mode: bool,
-        allow_special_fates: bool,
-    ) -> Self {
+    pub fn new(id: u16, query: InstanceQuery, game_data: &mut GameData, lua: &KawariLua) -> Self {
+        tracing::info!("Creating new instance for zone {id} for query {query:#?}!");
+
         let mut instance = Instance {
             zone: Zone::load(game_data, id),
             weather_id: game_data.get_weather(id as u32).unwrap_or_default() as u16,
+            query,
             ..Default::default()
         };
+
+        let mut explorer_mode = false;
+        let mut allow_special_fates = false;
+        if let InstanceQuery::InstancedContent {
+            content_finder_condition_id,
+            content_settings,
+        } = query
+        {
+            explorer_mode = content_settings.contains(DutyFinderSetting::EXPLORER_MODE);
+            allow_special_fates = true; // Needed for Occult Crescent I guess
+
+            Self::create_instance_for_content(
+                &mut instance,
+                content_finder_condition_id,
+                content_settings,
+                game_data,
+                lua,
+            );
+        }
 
         let config = get_config();
         if config.filesystem.navimesh_path.is_empty() {
@@ -233,6 +304,104 @@ impl Instance {
         }
 
         instance
+    }
+
+    fn create_instance_for_content(
+        instance: &mut Instance,
+        content_finder_condition_id: u16,
+        content_settings: DutyFinderSetting,
+        game_data: &mut GameData,
+        _lua: &KawariLua,
+    ) {
+        if let Some(director_type) = HandlerType::from_intended_use(instance.zone.intended_use) {
+            instance.content_id = game_data
+                .find_content_for_content_finder_id(content_finder_condition_id)
+                .unwrap_or_default();
+
+            instance.duration = Some(Duration::from_mins(
+                game_data
+                    .find_content_time_limit(instance.content_id)
+                    .unwrap_or_default() as u64,
+            ));
+
+            let id = HandlerId::new(director_type, instance.content_id);
+
+            // Setup Lua state for our director
+            let lua = KawariLua::new();
+
+            // Find the script for this content
+            let content_short_name = game_data
+                .get_content_short_name(content_finder_condition_id)
+                .unwrap();
+            let file_name = get_config()
+                .filesystem
+                .locate_script_file(&format!("content/{content_short_name}.lua"));
+
+            let mut director = DirectorData {
+                id,
+                ..Default::default()
+            };
+
+            let result = std::fs::read(&file_name);
+            if let Err(err) = result {
+                tracing::warn!(
+                    "Failed to load {}: {:?} instance content won't be scripted!",
+                    file_name,
+                    err
+                );
+            } else {
+                let file = result.unwrap();
+
+                if let Err(err) = lua
+                    .0
+                    .load(file)
+                    .set_name("@".to_string() + &file_name)
+                    .exec()
+                {
+                    tracing::warn!(
+                        "Syntax error in {}: {:?} instance content won't be scripted!",
+                        file_name,
+                        err
+                    );
+                } else {
+                    director.lua = lua;
+
+                    // Call into the onSetup function before returning, as we need the flag to be initialized before any players change zones.
+                    director.setup();
+                }
+            }
+
+            instance.directors.push(director);
+        } else {
+            tracing::warn!(
+                "No director created for TerritoryIntendedUse {}! If this is unexpected, please report it.",
+                instance.zone.intended_use
+            );
+        }
+
+        // Ensure we have the entrance set correctly
+        let entrance_id = game_data
+            .get_content_entrance_id(content_finder_condition_id)
+            .expect("Failed to find entrance ID?");
+        for range in &mut instance.zone.map_ranges {
+            if range.instance_id == entrance_id {
+                range.entrance = true;
+                break;
+            }
+        }
+
+        // Set up level sync
+        let needs_sync = {
+            if content_settings.contains(DutyFinderSetting::UNRESTRICTED_PARTY) {
+                content_settings.contains(DutyFinderSetting::LEVEL_SYNC)
+            } else {
+                !content_settings.contains(DutyFinderSetting::EXPLORER_MODE)
+            }
+        };
+        if needs_sync {
+            instance.synced_level =
+                game_data.find_content_synced_level(content_finder_condition_id);
+        }
     }
 
     pub fn find_actor(&self, id: ObjectId) -> Option<&NetworkedActor> {
@@ -570,6 +739,25 @@ impl Instance {
             .first()
             .copied()
     }
+
+    pub fn content_finder_condition_id(&self) -> u16 {
+        match self.query {
+            InstanceQuery::InstancedContent {
+                content_finder_condition_id,
+                ..
+            } => content_finder_condition_id,
+            _ => 0,
+        }
+    }
+
+    pub fn content_settings(&self) -> DutyFinderSetting {
+        match self.query {
+            InstanceQuery::InstancedContent {
+                content_settings, ..
+            } => content_settings,
+            _ => Default::default(),
+        }
+    }
 }
 
 /// Removes the actor from this instance, and terminates the directors from the client.
@@ -591,5 +779,19 @@ pub fn remove_actor_from_instance(
                 DestinationNetwork::ZoneClients,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_query_uniqueness() {
+        // Public should match
+        assert_eq!(InstanceQuery::Public, InstanceQuery::Public);
+
+        // Unique instances will never match against each other
+        assert_ne!(InstanceQuery::UniqueInstance, InstanceQuery::UniqueInstance);
     }
 }
