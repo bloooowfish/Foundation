@@ -35,7 +35,7 @@ use kawari::{
     ipc::zone::{
         ActorControlCategory, ActorSetPos, CharacterDataFlag, CommonSpawn, Conditions, DisplayFlag,
         ObjectKind, PrepareZoning, PrepareZoningFlag, ServerZoneIpcData, ServerZoneIpcSegment,
-        SpawnNpc, SpawnObject, SpawnTreasure,
+        SpawnNpc, SpawnObject, SpawnTreasure, WeatherChange,
     },
 };
 
@@ -476,7 +476,7 @@ impl Zone {
         None
     }
 
-    pub fn to_lua_zone(&self, weather_id: u16) -> LuaZone {
+    pub fn to_lua_zone(&self, weather_id: u8) -> LuaZone {
         LuaZone {
             zone_id: self.id,
             weather_id,
@@ -1569,6 +1569,30 @@ pub fn handle_zone_messages(
                 WarpType::Normal,
                 0,
                 Some(InstanceQuery::Ward { ward: *ward }),
+            );
+
+            true
+        }
+        ToServer::ChangeWeather(from_actor_id, weather_id) => {
+            let mut network = network.lock();
+            let mut data = data.lock();
+
+            let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
+                return true;
+            };
+
+            instance.weather_id = *weather_id;
+
+            let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::WeatherId(WeatherChange {
+                weather_id: *weather_id,
+                fade_length: 1.0,
+                ..Default::default()
+            }));
+            network.send_to_instance(
+                ObjectId::default(),
+                instance,
+                FromServer::PacketSegment(ipc, ObjectId::default()),
+                DestinationNetwork::ZoneClients,
             );
 
             true

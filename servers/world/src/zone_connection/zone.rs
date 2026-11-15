@@ -13,8 +13,8 @@ use kawari::{
     ipc::zone::{
         ActorControlCategory, ApartmentBuildingState, Condition, DutyFinderSetting, FurnitureList,
         House, HouseExterior, HouseList, HouseStatus, HousingInteriorDetails, PlotSize,
-        ServerZoneIpcData, ServerZoneIpcSegment, WardDivision, WardDivisionInfo, WeatherChange,
-        ZoneInit, ZoneInitFlags,
+        ServerZoneIpcData, ServerZoneIpcSegment, WardDivision, WardDivisionInfo, ZoneInit,
+        ZoneInitFlags,
     },
     packet::{ConnectionState, PacketSegment, ScramblerKeyGenerator, SegmentData, SegmentType},
 };
@@ -48,7 +48,7 @@ impl ZoneConnection {
         &mut self,
         new_zone_id: u16,
         content_finder_condition_id: u16,
-        weather_id: u16,
+        weather_id: u8,
         exit_position: Position,
         exit_rotation: f32,
         lua_zone: &LuaZone,
@@ -231,7 +231,7 @@ impl ZoneConnection {
 
             let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::ZoneInit(ZoneInit {
                 territory_type: new_zone_id,
-                weather_id: weather_id as u8,
+                weather_id,
                 flags,
                 content_finder_condition_id,
                 game_festival_ids,
@@ -453,15 +453,6 @@ impl ZoneConnection {
         if taking_offered_teleport {
             self.offered_teleport = None;
         }
-    }
-
-    pub async fn change_weather(&mut self, new_weather_id: u8) {
-        let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::WeatherId(WeatherChange {
-            weather_id: new_weather_id,
-            fade_length: 1.0,
-            ..Default::default()
-        }));
-        self.send_ipc_self(ipc).await;
     }
 
     pub async fn discover_location(&mut self, map_id: u32, map_part_id: u32) {

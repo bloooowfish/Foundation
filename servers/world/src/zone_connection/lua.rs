@@ -181,7 +181,12 @@ impl ZoneConnection {
                     self.send_stats().await; // Needed because stats change based on level.
                 }
                 LuaTask::ChangeWeather { id } => {
-                    self.change_weather(*id).await;
+                    self.handle
+                        .send(ToServer::ChangeWeather(
+                            self.player_data.character.actor_id,
+                            *id,
+                        ))
+                        .await;
                 }
                 LuaTask::ModifyCurrency {
                     id,

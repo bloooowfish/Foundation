@@ -135,7 +135,7 @@ pub enum FromServer {
     ChangeZone(
         u16,
         u16,
-        u16,
+        u8,
         Position,
         f32,
         LuaZone,
@@ -514,6 +514,8 @@ pub enum ToServer {
     SpawnBattleNpc(u32),
     /// Warp to a specified pop range in the housing ward.
     WarpHousingWard(ClientId, ObjectId, u16, u32, u16),
+    /// Forcefully change the weather for this player's instance.
+    ChangeWeather(ObjectId, u8),
 }
 
 #[derive(Clone, Debug)]

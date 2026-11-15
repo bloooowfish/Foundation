@@ -110,7 +110,7 @@ pub struct Instance {
     /// Basic zone data.
     pub zone: Zone,
     /// The zone's current weather.
-    pub weather_id: u16,
+    pub weather_id: u8,
     /// The query used when creating this instance.
     pub query: InstanceQuery,
     /// The content ID of this instance's content finder condition.
@@ -139,7 +139,7 @@ impl Instance {
 
         let mut instance = Instance {
             zone: Zone::load(game_data, id),
-            weather_id: game_data.get_weather(id as u32).unwrap_or_default() as u16,
+            weather_id: game_data.get_weather(id as u32).unwrap_or_default() as u8,
             query,
             ..Default::default()
         };

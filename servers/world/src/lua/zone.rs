@@ -13,7 +13,7 @@ use super::QueueSegments;
 #[derive(Debug, Default, Clone)]
 pub struct LuaZone {
     pub zone_id: u16,
-    pub weather_id: u16,
+    pub weather_id: u8,
     pub internal_name: String,
     pub region_name: String,
     pub place_name: String,
