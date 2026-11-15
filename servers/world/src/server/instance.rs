@@ -105,25 +105,25 @@ impl PartialEq for InstanceQuery {
 pub struct Instance {
     /// List of spawned actors.
     pub actors: HashMap<ObjectId, NetworkedActor>,
-    /// The navmesh data.
+    /// Navmesh data.
     pub navmesh: Navmesh,
-    /// The zone data.
+    /// Basic zone data.
     pub zone: Zone,
     /// The zone's current weather.
     pub weather_id: u16,
-    /// The query used to create this instance.
+    /// The query used when creating this instance.
     pub query: InstanceQuery,
-    /// The content ID for the content finder condition, if applicable.
+    /// The content ID of this instance's content finder condition.
     pub content_id: u16,
-    /// If Some, then this is the path of the navmesh we need to generate.
+    /// Navmesh generation status.
     pub generate_navmesh: NavmeshGenerationStep,
-    /// List of tasks that has to be executed an arbitrary point in the future.
+    /// List of tasks that to be executed an arbitrary point in the future.
     pub queued_tasks: Vec<QueuedTask>,
-    /// Current directors of this instance.
+    /// Directors of this instance.
     pub directors: Vec<DirectorData>,
     /// Whether enemy AI is currently disabled.
     pub enemy_ai_disabled: bool,
-    /// List of running/preparing FATEs.
+    /// List of spawned FATEs.
     pub fates: Vec<FateInstance>,
     /// List of FATEs that are able to spawn.
     pub candiate_fates: Vec<u32>,
