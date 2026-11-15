@@ -1,8 +1,8 @@
 //! All things zone related, such as changing the weather or warping.
 
 use crate::{
-    ObsfucationData, TeleportReason, ToServer, ZoneConnection, inventory::BuyBackList,
-    lua::LuaZone, zone_connection::TeleportQuery,
+    InstanceQuery, ObsfucationData, TeleportReason, ToServer, ZoneConnection,
+    inventory::BuyBackList, lua::LuaZone, zone_connection::TeleportQuery,
 };
 use kawari::{
     common::{
@@ -53,6 +53,7 @@ impl ZoneConnection {
         exit_rotation: f32,
         lua_zone: &LuaZone,
         handler_id: Option<HandlerId>,
+        query: InstanceQuery,
     ) {
         self.spawned_in = false;
         self.fate_motivation_npcs.clear();
@@ -283,7 +284,9 @@ impl ZoneConnection {
             self.send_crafting_gathering_information().await;
         }
 
-        if lua_zone.intended_use == TerritoryIntendedUse::HousingOutdoor {
+        if lua_zone.intended_use == TerritoryIntendedUse::HousingOutdoor
+            && let InstanceQuery::Ward { ward } = query
+        {
             let mut houses = [House::default(); 30];
 
             // First, populate the houses in this ward. Note that for now, we treat every ward the same.
@@ -336,7 +339,7 @@ impl ZoneConnection {
             self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::HouseList(
                 HouseList {
                     land_id: 0,
-                    ward: 0,
+                    ward,
                     territory_type_id: lua_zone.zone_id,
                     world_id: self.config.world_id,
                     division_info: WardDivisionInfo {

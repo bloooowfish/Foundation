@@ -26,10 +26,10 @@ function onYield(scene, id, results, player)
 
     if results[1] == 1 then
         -- go to ward
-        local ward_number = results[2]
+        local ward = results[2]
         local territory_id = results[3]
 
-        player:change_territory_pop_range(territory_id, pop_range_id)
+        player:change_territory_housing_ward(territory_id, pop_range_id, ward)
     end
     player:finish_event()
 end

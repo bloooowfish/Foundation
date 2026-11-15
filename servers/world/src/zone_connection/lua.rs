@@ -799,6 +799,21 @@ impl ZoneConnection {
                     }
                     self.respawn_player(false).await;
                 }
+                LuaTask::WarpHousingWard {
+                    territory_id,
+                    pop_range_id,
+                    ward,
+                } => {
+                    self.handle
+                        .send(ToServer::WarpHousingWard(
+                            self.id,
+                            self.player_data.character.actor_id,
+                            *territory_id,
+                            *pop_range_id,
+                            *ward,
+                        ))
+                        .await;
+                }
             }
         }
 

@@ -12,7 +12,7 @@ use physis::{
 };
 
 use crate::{
-    ClientId, FromServer, GameData, StatusEffects, TerritoryNameKind, ToServer,
+    ClientId, FromServer, GameData, InstanceQuery, StatusEffects, TerritoryNameKind, ToServer,
     lua::{KawariLua, LuaZone},
     server::{
         NetworkedActor, WorldServer,
@@ -832,6 +832,7 @@ fn begin_change_zone<'a>(
     actor_id: ObjectId,
     warp_type: WarpType,
     loading_screen_vfx_id: u16,
+    query: Option<InstanceQuery>,
 ) -> (&'a mut Instance, bool) {
     if let Some(destination_zone_id) = destination_zone_id {
         let mut needs_init_zone = false;
@@ -869,15 +870,19 @@ fn begin_change_zone<'a>(
         let mut rotation = Default::default();
 
         // then find or create a new instance with the zone id
-        let instance = data.ensure_exists(
-            network,
-            game_data,
-            lua,
-            actor_id,
-            destination_zone_id,
-            &mut position,
-            &mut rotation,
-        );
+        let instance = if let Some(query) = query {
+            data.ensure_exists_query(game_data, lua, destination_zone_id, query)
+        } else {
+            data.ensure_exists(
+                network,
+                game_data,
+                lua,
+                actor_id,
+                destination_zone_id,
+                &mut position,
+                &mut rotation,
+            )
+        };
         // Insert an empty actor that will be filled later
         instance.insert_empty_actor(actor_id);
 
@@ -930,6 +935,7 @@ pub fn change_zone_warp_to_pop_range(
     from_id: ClientId,
     warp_type: WarpType,
     loading_screen_vfx_id: u16,
+    query: Option<InstanceQuery>,
 ) {
     let (target_instance, needs_init_zone) = begin_change_zone(
         data,
@@ -940,6 +946,7 @@ pub fn change_zone_warp_to_pop_range(
         actor_id,
         warp_type,
         loading_screen_vfx_id,
+        query,
     );
 
     let exit_position;
@@ -1062,6 +1069,7 @@ pub fn change_zone_to_player(
         from_actor_id,
         WarpType::Normal,
         0,
+        None,
     );
 
     let Some(target_actor) = target_instance.find_actor(to_actor_id) else {
@@ -1106,6 +1114,7 @@ fn do_change_zone(
             exit_rotation.unwrap_or_default(),
             target_instance.zone.to_lua_zone(target_instance.weather_id),
             target_instance.content_handler_id(),
+            target_instance.query,
         );
         network.send_to(from_id, msg, DestinationNetwork::ZoneClients);
     } else {
@@ -1188,6 +1197,7 @@ pub fn handle_zone_messages(
                 *actor_id,
                 *warp_type,
                 *loading_screen_vfx_id,
+                None,
             );
             do_change_zone(
                 &mut network,
@@ -1249,6 +1259,7 @@ pub fn handle_zone_messages(
                 *from_id,
                 *warp_type,
                 *loading_screen_vfx_id,
+                None,
             );
 
             true
@@ -1275,6 +1286,7 @@ pub fn handle_zone_messages(
                 *from_id,
                 WarpType::Normal,
                 0,
+                None,
             );
 
             true
@@ -1301,6 +1313,7 @@ pub fn handle_zone_messages(
                 *from_id,
                 WarpType::Normal,
                 0,
+                None,
             );
 
             true
@@ -1322,6 +1335,7 @@ pub fn handle_zone_messages(
                 *from_id,
                 WarpType::Normal,
                 0,
+                None,
             );
 
             true
@@ -1430,6 +1444,7 @@ pub fn handle_zone_messages(
                     WarpType::None
                 },
                 0,
+                None,
             );
 
             true
@@ -1532,6 +1547,28 @@ pub fn handle_zone_messages(
                 instance,
                 msg,
                 DestinationNetwork::ZoneClients,
+            );
+
+            true
+        }
+        ToServer::WarpHousingWard(from_id, from_actor_id, territory_id, pop_range_id, ward) => {
+            let mut data = data.lock();
+            let mut network = network.lock();
+            let mut game_data = game_data.lock();
+            let lua = lua.lock();
+
+            change_zone_warp_to_pop_range(
+                &mut data,
+                &mut network,
+                &mut game_data,
+                &lua,
+                Some(*territory_id),
+                *pop_range_id,
+                *from_actor_id,
+                *from_id,
+                WarpType::Normal,
+                0,
+                Some(InstanceQuery::Ward { ward: *ward }),
             );
 
             true

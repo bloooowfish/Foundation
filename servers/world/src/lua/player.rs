@@ -580,6 +580,14 @@ impl LuaPlayer {
 
         self.current_level >= level
     }
+
+    fn change_territory_housing_ward(&mut self, territory_id: u16, pop_range_id: u32, ward: u16) {
+        self.queued_tasks.push(LuaTask::WarpHousingWard {
+            territory_id,
+            pop_range_id,
+            ward,
+        });
+    }
 }
 
 impl UserData for LuaPlayer {
@@ -1031,6 +1039,13 @@ impl UserData for LuaPlayer {
         methods.add_method("has_trait", |lua, this, id: u32| {
             Ok(this.has_trait(lua.globals().get("GAME_DATA").unwrap(), id))
         });
+        methods.add_method_mut(
+            "change_territory_housing_ward",
+            |_, this, (territory_id, pop_range_id, ward): (u16, u32, u16)| {
+                this.change_territory_housing_ward(territory_id, pop_range_id, ward);
+                Ok(())
+            },
+        );
     }
 
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {

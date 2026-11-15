@@ -760,6 +760,7 @@ fn server_logic_tick(
             from_id,
             WarpType::Event,
             0,
+            None,
         );
     }
 }
@@ -957,6 +958,7 @@ pub async fn server_main_loop(
                                     from_id,
                                     WarpType::Normal,
                                     0,
+                                    None,
                                 );
                             }
                             QueuedTaskData::ResetCombo => {
@@ -1202,6 +1204,7 @@ pub async fn server_main_loop(
                         exit_rotation,
                         instance.zone.to_lua_zone(instance.weather_id),
                         instance.content_handler_id(),
+                        instance.query,
                     );
 
                     network.send_to(from_id, msg, DestinationNetwork::ZoneClients);
@@ -2313,6 +2316,7 @@ pub async fn server_main_loop(
                         old_rotation,
                         instance.zone.to_lua_zone(instance.weather_id),
                         instance.content_handler_id(),
+                        instance.query,
                     );
                     network.send_to(from_client_id, msg, DestinationNetwork::ZoneClients);
                 }

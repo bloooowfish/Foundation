@@ -3997,6 +3997,7 @@ async fn process_server_msg(
                 rotation,
                 lua_zone,
                 handler_id,
+                query,
             ) => {
                 connection
                     .handle_zone_change(
@@ -4007,6 +4008,7 @@ async fn process_server_msg(
                         rotation,
                         &lua_zone,
                         handler_id,
+                        query,
                     )
                     .await;
                 lua_player.zone_data = lua_zone;

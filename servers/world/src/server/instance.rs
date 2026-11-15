@@ -64,7 +64,7 @@ pub enum InstanceQuery {
     /// Instance of a player's house.
     House { house_id: HouseId },
     /// Instance of a housing ward.
-    Ward { ward_id: u32 },
+    Ward { ward: u16 },
 }
 
 impl PartialEq for InstanceQuery {
@@ -91,7 +91,7 @@ impl PartialEq for InstanceQuery {
                     house_id: r_house_id,
                 },
             ) => l_house_id == r_house_id,
-            (Self::Ward { ward_id: l_ward_id }, Self::Ward { ward_id: r_ward_id }) => {
+            (Self::Ward { ward: l_ward_id }, Self::Ward { ward: r_ward_id }) => {
                 l_ward_id == r_ward_id
             }
             // Unique instances never match against each other.

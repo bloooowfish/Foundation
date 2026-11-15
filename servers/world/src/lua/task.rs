@@ -224,4 +224,9 @@ pub enum LuaTask {
     SetCustomize {
         customize: CustomizeData,
     },
+    WarpHousingWard {
+        territory_id: u16,
+        pop_range_id: u32,
+        ward: u16,
+    },
 }

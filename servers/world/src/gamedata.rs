@@ -1804,7 +1804,7 @@ impl GameData {
         self.gfate_sheet.row(id)
     }
 
-    /// Determines a suitable InstanceQuery backwards from a TerritoryTypeId.
+    /// Determines a suitable `InstanceQuery` from a given TerritoryType id.
     ///
     /// If it returns `None`, that means the zone is invalid and the player needs to be reset.
     pub fn determine_default_query(&self, territory_type_id: u16) -> Option<InstanceQuery> {
@@ -1813,9 +1813,19 @@ impl GameData {
         if row.ContentFinderCondition != 0 {
             return None;
         }
-        if is_private_area(
-            TerritoryIntendedUse::from_repr(row.TerritoryIntendedUse).unwrap_or_default(),
-        ) {
+
+        let intended_use =
+            TerritoryIntendedUse::from_repr(row.TerritoryIntendedUse).unwrap_or_default();
+
+        // Don't allow players to spawn back into houses (this isn't allowed in retail anyway)
+        // And also don't allow players to spawn back into housing wards, because we don't keep track of which ward were in while logged out yet.
+        if intended_use == TerritoryIntendedUse::HousingOutdoor
+            || intended_use == TerritoryIntendedUse::HousingIndoor
+        {
+            return None;
+        }
+
+        if is_private_area(intended_use) {
             Some(InstanceQuery::UniqueInstance)
         } else {
             Some(InstanceQuery::Public)

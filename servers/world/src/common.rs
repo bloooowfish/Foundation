@@ -10,7 +10,7 @@ use icarus::Quest::QuestSheet;
 use tokio::sync::mpsc::Sender;
 
 use crate::{
-    StatusEffects,
+    InstanceQuery, StatusEffects,
     lua::LuaTask,
     server::Party,
     zone_connection::{BaseParameters, TeleportQuery},
@@ -132,7 +132,16 @@ pub enum FromServer {
     // TODO: temporary
     Conditions(Conditions),
     /// To inform the connection of the zone they're loading into.
-    ChangeZone(u16, u16, u16, Position, f32, LuaZone, Option<HandlerId>),
+    ChangeZone(
+        u16,
+        u16,
+        u16,
+        Position,
+        f32,
+        LuaZone,
+        Option<HandlerId>,
+        InstanceQuery,
+    ),
     /// We need to inform the recipent about the direct message they're receiving.
     TellMessageReceived(ObjectId, TellMessage),
     /// We need to tell our chat connection that our zone connection has disconnected.
@@ -503,6 +512,8 @@ pub enum ToServer {
     ReloadFestivals,
     /// For the SpawnBatteNpc custom IPC.
     SpawnBattleNpc(u32),
+    /// Warp to a specified pop range in the housing ward.
+    WarpHousingWard(ClientId, ObjectId, u16, u32, u16),
 }
 
 #[derive(Clone, Debug)]
