@@ -15,6 +15,7 @@ use crate::{
         director::DirectorData,
         fate::{FateInstance, internally_start_fate},
         network::{DestinationNetwork, NetworkState},
+        task::{QueuedTask, QueuedTaskData},
         zone::Zone,
     },
     zone_connection::{BaseParameters, TeleportQuery},
@@ -26,8 +27,8 @@ use kawari::{
     },
     config::{Config, get_config},
     ipc::zone::{
-        ActionRequest, ActorControlCategory, Conditions, DutyFinderSetting, ServerZoneIpcSegment,
-        SpawnNpc, SpawnObject, SpawnPlayer, SpawnTreasure,
+        ActorControlCategory, Conditions, DutyFinderSetting, SpawnNpc, SpawnObject, SpawnPlayer,
+        SpawnTreasure,
     },
 };
 use parking_lot::Mutex;
@@ -41,64 +42,6 @@ pub enum NavmeshGenerationStep {
     Needed(String),
     /// The process to write the navmesh has started, and we need to wait until the file exists.
     Started(String),
-}
-
-#[derive(Debug, Clone)]
-pub enum QueuedTaskData {
-    CastAction {
-        request: ActionRequest,
-        /// Currently means if it has a cast bar.
-        interruptible: bool,
-    },
-    LoseStatusEffect {
-        effect_id: u16,
-        effect_param: u16,
-        effect_source_actor_id: ObjectId,
-    },
-    /// Fade out a dead actor.
-    DeadFadeOut {
-        actor_id: ObjectId,
-        respawn_layout_id: Option<u32>,
-    },
-    /// Despawn a dead actor.
-    DeadDespawn {
-        actor_id: ObjectId,
-        respawn_layout_id: Option<u32>,
-    },
-    /// Complete an EventAction
-    CastEventAction { target: ObjectId },
-    /// Make a fish bite.
-    FishBite,
-    /// Seal a boss wall.
-    SealBossWall { id: u32, place_name: u32 },
-    /// Generically send a packet segment, only used for `do_change_zone`. Don't abuse this as a generic task, you almost certainly want to create a new variant.
-    PacketSegment { segment: ServerZoneIpcSegment },
-    /// Used by directors since its tough to fit this into the director logic.
-    WarpToPopRange { id: u32 },
-    /// Reset a player's action combo status.
-    ResetCombo,
-    /// Respawn a new mob.
-    RespawnMob { layout_id: u32 },
-    /// Ends a FATE.
-    EndFate { fate_id: u32 },
-    /// Terminates a director.
-    TerminateDirector { handler_id: HandlerId },
-}
-
-#[derive(Debug, Clone)]
-pub struct QueuedTask {
-    pub point: Instant,
-    pub from_id: ClientId,
-    pub from_actor_id: ObjectId,
-    pub data: QueuedTaskData,
-}
-
-impl PartialEq for QueuedTask {
-    fn eq(&self, other: &Self) -> bool {
-        self.point == other.point
-            && self.from_id == other.from_id
-            && self.from_actor_id == other.from_actor_id
-    }
 }
 
 /// Query used to identify and create instances.
@@ -175,7 +118,7 @@ pub struct Instance {
     /// If Some, then this is the path of the navmesh we need to generate.
     pub generate_navmesh: NavmeshGenerationStep,
     /// List of tasks that has to be executed an arbitrary point in the future.
-    pub queued_task: Vec<QueuedTask>,
+    pub queued_tasks: Vec<QueuedTask>,
     /// Current directors of this instance.
     pub directors: Vec<DirectorData>,
     /// Whether enemy AI is currently disabled.
@@ -576,7 +519,7 @@ impl Instance {
         duration: Duration,
         data: QueuedTaskData,
     ) {
-        self.queued_task.push(QueuedTask {
+        self.queued_tasks.push(QueuedTask {
             point: Instant::now() + duration,
             from_id,
             from_actor_id,
@@ -586,7 +529,7 @@ impl Instance {
 
     /// Finds all tasks relevant to a given actor.
     pub fn find_tasks(&self, for_actor_id: ObjectId) -> Vec<QueuedTask> {
-        self.queued_task
+        self.queued_tasks
             .iter()
             .filter(|x| x.from_actor_id == for_actor_id)
             .cloned()
@@ -595,7 +538,7 @@ impl Instance {
 
     pub fn cancel_task(&mut self, network: Arc<Mutex<NetworkState>>, task: &QueuedTask) {
         // Delete the selected task:
-        self.queued_task.retain(|x| x != task);
+        self.queued_tasks.retain(|x| x != task);
 
         // Then actually do the work:
         if let QueuedTaskData::CastAction { request, .. } = &task.data {
@@ -612,13 +555,13 @@ impl Instance {
     // NOTE: this currently does *not* call cancel_action, so be careful if you're porting from cancel_task!
     pub fn retain_tasks(&mut self, f: impl Fn(&QueuedTask) -> bool) {
         // Delete the selected tasks
-        self.queued_task.retain(f);
+        self.queued_tasks.retain(f);
     }
 
     /// Cancels all queued actions for this actor.
     pub fn cancel_actor_tasks(&mut self, actor_id: ObjectId) {
         // Delete the selected task:
-        self.queued_task.retain(|x| x.from_actor_id != actor_id);
+        self.queued_tasks.retain(|x| x.from_actor_id != actor_id);
     }
 
     /// Returns the actor ID (if any) of the spawned EObj by it's instance ID in the layout.

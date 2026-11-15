@@ -10,8 +10,9 @@ use crate::{
     lua::{KawariLua, KawariLuaState, LuaPlayer, LuaZone},
     server::{
         WorldServer,
-        instance::{Instance, QueuedTaskData},
+        instance::Instance,
         network::{DestinationNetwork, NetworkState},
+        task::QueuedTaskData,
     },
     zone_connection::BaseParameters,
 };

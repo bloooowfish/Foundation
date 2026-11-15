@@ -23,8 +23,9 @@ use crate::{
     ClientId, FromServer, GameData,
     server::{
         actor::{NetworkedActor, NpcState, NpcTarget, set_shared_group_timeline_state},
-        instance::{Instance, QueuedTaskData},
+        instance::Instance,
         network::{DestinationNetwork, NetworkState},
+        task::QueuedTaskData,
     },
 };
 

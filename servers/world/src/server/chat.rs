@@ -22,8 +22,8 @@ use crate::{
         actor::{NetworkedActor, NpcState, spawn_custom_bnpc},
         director::{DirectorData, LuaDirectorTask},
         fate::spawn_fate,
-        instance::QueuedTaskData,
         network::{DestinationNetwork, NetworkState},
+        task::QueuedTaskData,
         zone::change_zone_warp_to_pop_range,
     },
 };

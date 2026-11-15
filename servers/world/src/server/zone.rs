@@ -18,8 +18,9 @@ use crate::{
         NetworkedActor, WorldServer,
         actor::{create_npc_common_spawn, set_character_mode},
         fate::inform_fate_spawn,
-        instance::{Instance, QueuedTaskData, remove_actor_from_instance},
+        instance::{Instance, remove_actor_from_instance},
         network::{DestinationNetwork, NetworkState},
+        task::QueuedTaskData,
     },
     zone_connection::{BaseParameters, TeleportQuery},
 };

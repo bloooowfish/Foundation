@@ -19,8 +19,9 @@ use crate::{
     lua::{KawariLua, KawariLuaState},
     server::{
         actor::NetworkedActor,
-        instance::{Instance, QueuedTaskData},
+        instance::Instance,
         network::{DestinationNetwork, NetworkState},
+        task::QueuedTaskData,
     },
 };
 

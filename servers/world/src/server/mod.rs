@@ -24,7 +24,7 @@ use crate::{
         },
         effect::{handle_effect_messages, remove_effect, send_effects_list},
         fate::{ended_fate, fate_tick, start_fate, start_next_fate, unk10_fate},
-        instance::{Instance, NavmeshGenerationStep, QueuedTaskData, remove_actor_from_instance},
+        instance::{Instance, NavmeshGenerationStep, remove_actor_from_instance},
         linkshell::handle_linkshell_messages,
         network::{DestinationNetwork, NetworkState},
         party::{
@@ -34,6 +34,7 @@ use crate::{
         },
         social::handle_social_messages,
         spawn_allocator::SpawnAllocator,
+        task::QueuedTaskData,
         zone::{
             MapGimmick, change_zone_to_player, change_zone_warp_to_entrance,
             change_zone_warp_to_pop_range, handle_zone_messages,
@@ -71,6 +72,7 @@ mod fate;
 mod npc_behavior;
 mod social;
 mod spawn_allocator;
+mod task;
 mod zone;
 
 #[derive(Default, Debug, Clone)]
@@ -773,7 +775,7 @@ pub async fn server_main_loop(
                         let mut data = data.lock();
                         for (i, instance) in data.instances.iter_mut().enumerate() {
                             for task in &instance
-                                .queued_task
+                                .queued_tasks
                                 .extract_if(.., |x| x.point <= Instant::now())
                                 .collect::<Vec<_>>()
                             {

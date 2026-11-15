@@ -12,8 +12,9 @@ use crate::{
         WorldServer,
         actor::{NetworkedActor, create_npc_common_spawn, update_actor_hp_mp},
         effect::gain_effect,
-        instance::{Instance, QueuedTaskData},
+        instance::Instance,
         network::{DestinationNetwork, NetworkState},
+        task::QueuedTaskData,
     },
     zone_connection::{BaseParameters, TeleportQuery},
 };

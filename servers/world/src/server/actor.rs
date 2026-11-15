@@ -4,8 +4,9 @@ use crate::{
     ClientId, FromServer, GameData, StatusEffects,
     server::{
         WorldServer,
-        instance::{Instance, QueuedTaskData},
+        instance::Instance,
         network::{DestinationNetwork, NetworkState},
+        task::QueuedTaskData,
     },
     zone_connection::{BaseParameters, TeleportQuery},
 };

@@ -25,8 +25,9 @@ use crate::{
         WorldServer,
         actor::NetworkedActor,
         effect::gain_effect_instance,
-        instance::{Instance, QueuedTaskData},
+        instance::Instance,
         network::{DestinationNetwork, NetworkState},
+        task::QueuedTaskData,
     },
 };
 
