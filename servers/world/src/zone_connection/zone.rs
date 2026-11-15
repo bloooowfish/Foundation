@@ -55,9 +55,12 @@ impl ZoneConnection {
         handler_id: Option<HandlerId>,
         query: InstanceQuery,
     ) {
+        // Reset data
         self.spawned_in = false;
         self.fate_motivation_npcs.clear();
         self.content_handler_id = handler_id;
+        self.player_data.buyback_list = BuyBackList::default();
+        self.synced_level = None;
 
         let bound_by_duty = content_finder_condition_id != 0;
 
@@ -96,41 +99,35 @@ impl ZoneConnection {
         }
 
         // they send the initialize packet again for some reason
-        {
-            self.send_segment(PacketSegment {
-                segment_type: SegmentType::Initialize,
-                data: SegmentData::Initialize {
-                    actor_id: self.player_data.character.actor_id,
-                    timestamp: timestamp_secs(),
-                },
-                ..Default::default()
-            })
-            .await;
-        }
-
-        // Clear the server's copy of the buyback list.
-        self.player_data.buyback_list = BuyBackList::default();
+        self.send_segment(PacketSegment {
+            segment_type: SegmentType::Initialize,
+            data: SegmentData::Initialize {
+                actor_id: self.player_data.character.actor_id,
+                timestamp: timestamp_secs(),
+            },
+            ..Default::default()
+        })
+        .await;
 
         // Send obsfucation init
-        if self.config.enable_packet_obsfucation {
-            let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::InitializeObfuscation {
+        let ipc = if self.config.enable_packet_obsfucation {
+            ServerZoneIpcSegment::new(ServerZoneIpcData::InitializeObfuscation {
                 unk_before: [0; 6],
                 obsfucation_mode: OBFUSCATION_ENABLED_MODE,
                 seed1: !self.obsfucation_data.seed1,
                 seed2: !self.obsfucation_data.seed2,
                 seed3: !self.obsfucation_data.seed3,
-            });
-            self.send_ipc_self(ipc).await;
+            })
         } else {
-            let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::InitializeObfuscation {
+            ServerZoneIpcSegment::new(ServerZoneIpcData::InitializeObfuscation {
                 unk_before: [0; 6],
                 obsfucation_mode: 0,
                 seed1: 0,
                 seed2: 0,
                 seed3: 0,
-            });
-            self.send_ipc_self(ipc).await;
-        }
+            })
+        };
+        self.send_ipc_self(ipc).await;
 
         self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::InitResponse {
             actor_id: self.player_data.character.actor_id,
@@ -240,7 +237,6 @@ impl ZoneConnection {
                 game_festival_ids,
                 game_festival_phases,
                 ui_festival_ids: self.config.active_festivals.map(FestivalId),
-                unk1: 8.59375,
                 ..Default::default()
             }));
             self.send_ipc_self(ipc).await;
@@ -260,13 +256,6 @@ impl ZoneConnection {
         self.actor_control_self(ActorControlCategory::SetItemLevel { level })
             .await;
 
-        // NOTE: This is currently disabled because - at least in my testing - we quickly desync and I'm unsure if this is actually important right now.
-        // Let's re-enable this once we're not trash
-        // builder.actor_control_self(ActorControlCategory::EnableInstancePositionHandler {
-        //     enabled: bound_by_duty,
-        // });
-
-        // send some weird thing to make the zone load correctly
         if !bound_by_duty {
             self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::DailyQuests {
                 unk1: [0; 56],
@@ -404,12 +393,10 @@ impl ZoneConnection {
             .toggle_condition(Condition::BoundByDuty56, bound_by_duty);
 
         self.send_conditions().await;
-
-        self.synced_level = None;
         self.update_class_info().await;
         self.send_stats().await;
 
-        // Inform the server we're ready for director data
+        // Inform the server we're ready for it to send director data
         self.handle
             .send(ToServer::ReadyDirectorData(
                 self.player_data.character.actor_id,
