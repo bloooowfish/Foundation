@@ -2652,12 +2652,6 @@ async fn process_packet(
                             }
                         }
                         ClientZoneIpcData::NewDiscovery { layout_id, pos } => {
-                            tracing::info!(
-                                "Client discovered a new location on {:?} at {:?}!",
-                                layout_id,
-                                pos
-                            );
-
                             connection
                                 .handle
                                 .send(ToServer::NewLocationDiscovered(
