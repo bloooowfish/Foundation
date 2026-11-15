@@ -21,7 +21,8 @@ use kawari::ipc::chat::ClientChatIpcData;
 use kawari::ipc::zone::{
     ActorControlCategory, CWLSLeaveReason, ClientTriggerTarget, Conditions,
     ContentFinderUserAction, CrossRealmListing, CrossRealmListings, DutyFinderSetting,
-    DutySupportInformation, EventLogMessage, EventType, FurnitureTranslatedForObserver, ItemInfo,
+    DutySupportInformation, EventLogMessage, EventType, FurnitureTranslatedForObserver,
+    HousingAppealTag, HousingOccupiedLandInfo, HousingVacantLandInfo, ItemInfo,
     LinkshellInviteResponse, MarketBoardHistory, MarketBoardHistoryEntry, MarketBoardItem,
     OnlineStatus, OnlineStatusMask, PlayerSetup, SceneFlags, SearchInfo, SocialListRequestType,
     TrustContent, TrustInformation,
@@ -33,7 +34,7 @@ use kawari::ipc::zone::{
     ServerZoneIpcSegment, SocialListUILanguages,
 };
 
-use kawari::common::{CharacterMode, NETWORK_TIMEOUT, RECEIVE_BUFFER_SIZE};
+use kawari::common::{CharacterMode, HouseId, HouseUnit, NETWORK_TIMEOUT, RECEIVE_BUFFER_SIZE};
 use kawari::constants::{AETHER_CURRENT_COMP_FLG_SET_BITMASK_SIZE, CLASSJOB_ARRAY_SIZE};
 use kawari::packet::oodle::OodleNetwork;
 use kawari::packet::{ConnectionState, ConnectionType, SegmentData, parse_packet_header};
@@ -199,6 +200,8 @@ async fn initial_setup(
                     fate_motivation_npcs: HashMap::new(),
                     content_handler_id: None,
                     can_share_teleport: false,
+                    entering_subdivision: false,
+                    ward_number: 0xff,
                 };
 
                 // Handle setup before passing off control to the zone connection.
@@ -1696,6 +1699,100 @@ async fn process_packet(
                                                 },
                                             ))
                                             .await;
+                                    }
+                                }
+                                ClientTriggerCommand::RequestHousingVacantPlotInfo {
+                                    zone_id,
+                                    plot_index,
+                                    ward_index,
+                                }
+                                | ClientTriggerCommand::RequestHousingOccupiedPlotInfo {
+                                    zone_id,
+                                    plot_index,
+                                    ward_index,
+                                } => {
+                                    let plot = plot_index + 1;
+                                    let ward = ward_index + 1;
+
+                                    tracing::info!(
+                                        "Requesting placard info for {zone_id}, plot index {plot}, in ward {ward}"
+                                    );
+                                    let house_info;
+                                    {
+                                        let mut database = connection.database.lock();
+                                        let house_id = HouseId {
+                                            unit: HouseUnit {
+                                                apartment_flag: false,
+                                                apartment_division_plot_index: plot_index,
+                                            },
+                                            unk1: 0,
+                                            ward_index,
+                                            territory_type_id: zone_id as u16,
+                                            room_number: 0,
+                                            world_id: connection.config.world_id,
+                                        };
+                                        house_info = database.find_house(house_id);
+                                    }
+
+                                    // This is always sent regardless, and since we haven't yet implemented purchases, it's fine for it to be blank.
+                                    let ipc = ServerZoneIpcSegment::new(
+                                        ServerZoneIpcData::HousingVacantLandInfo(
+                                            HousingVacantLandInfo {
+                                                ..Default::default()
+                                            },
+                                        ),
+                                    );
+                                    connection.send_ipc_self(ipc).await;
+
+                                    if let Some(house_info) = house_info {
+                                        let owner_info;
+                                        {
+                                            let mut database = connection.database.lock();
+                                            if !house_info.is_free_company {
+                                                owner_info = database.find_character(
+                                                    Some(house_info.owner_id as u64),
+                                                    None,
+                                                );
+                                            } else {
+                                                // TODO: Free companies aren't implemented yet
+                                                owner_info = None;
+                                            }
+                                        }
+
+                                        // TODO: Might be better to do this deserialization in the housing database code, but at the moment this is literally the only spot it's used...
+                                        let tags_as_u8s: [u8; 3] =
+                                            serde_json::from_str(&house_info.appeal_tags).unwrap();
+                                        let appeal_tags = [
+                                            HousingAppealTag::from_repr(tags_as_u8s[0] as usize)
+                                                .unwrap_or_default(),
+                                            HousingAppealTag::from_repr(tags_as_u8s[1] as usize)
+                                                .unwrap_or_default(),
+                                            HousingAppealTag::from_repr(tags_as_u8s[2] as usize)
+                                                .unwrap_or_default(),
+                                        ];
+
+                                        let ipc = ServerZoneIpcSegment::new(
+                                            ServerZoneIpcData::HousingOccupiedLandInfo(
+                                                HousingOccupiedLandInfo {
+                                                    house_icon: 1, // TODO: Don't hardcode this
+                                                    estate_name: house_info.house_name,
+                                                    estate_greeting: house_info.house_greeting,
+                                                    owner_name: if let Some(owner_info) = owner_info
+                                                    {
+                                                        owner_info.name
+                                                    } else {
+                                                        "(Unable to retrieve)".to_string()
+                                                    },
+                                                    owner_id: house_info.owner_id as u64,
+                                                    unk2: 2, // TODO: We know what this field is and need to update it
+                                                    tags: appeal_tags,
+                                                    ..Default::default()
+                                                },
+                                            ),
+                                        );
+                                        connection.send_ipc_self(ipc).await;
+                                    } else {
+                                        // TODO: I think we need to send the price info here, need to double check
                                     }
                                 }
                                 ClientTriggerCommand::RequestPlayerName => {

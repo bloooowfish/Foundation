@@ -3,10 +3,12 @@ mod friends;
 mod linkshell;
 mod mail;
 
+mod housing;
 mod models;
+
 pub use models::{
     AetherCurrent, Aetheryte, Buddy, Character, ClassJob, Companion, Content, Customize, Friends,
-    GrandCompany, Mentor, Quest, SearchInfo, Unlock, Volatile,
+    GrandCompany, House, Mentor, Quest, SearchInfo, Unlock, Volatile,
 };
 
 mod schema;

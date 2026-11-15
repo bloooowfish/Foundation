@@ -209,6 +209,10 @@ pub struct ZoneConnection {
     pub content_handler_id: Option<HandlerId>,
     /// Whether the player can offer this teleport to their party.
     pub can_share_teleport: bool, // TODO: remove this and add more teleport reasons
+    /// Whether the player is teleporting to an aetheryte in a housing subdivision.
+    pub entering_subdivision: bool,
+    /// Temorary variable storing which ward the client is currently in during housing aethernet travel.
+    pub ward_number: u8, // TODO: This should probably be a field in Volatile instead?
 }
 
 impl ZoneConnection {

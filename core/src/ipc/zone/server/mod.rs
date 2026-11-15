@@ -116,12 +116,12 @@ mod apartment_list;
 pub use apartment_list::{ApartmentList, ApartmentListEntry};
 
 mod house_list;
-pub use house_list::{House, HouseExterior, HouseList, HouseStatus};
+pub use house_list::{House, HouseExterior, HouseList};
 
 mod housing_ward;
 pub use housing_ward::{
     ApartmentBuildingState, HousingWardInfo, HousingWardSummaryItem,
-    UpdateMapMarkersForWardDivision, WardDivision, WardDivisionInfo,
+    UpdateMapMarkersForWardDivision, WardDivision, WardDivisionInfo, WardMapInfo, WardMapInfoFlags,
 };
 
 mod housing_interior_furniture;

@@ -12,7 +12,7 @@ pub struct FurnitureList {
     /// The LandId this list is for.
     pub id: HouseId,
     /// The type of estate this furniture is for. This mainly seems to control visibility of the additional chambers door. Wards set it to 255.
-    pub unk1: EstateType,
+    pub estate_type: EstateType,
     /// The current `index` out of `count` packets to be sent.
     pub index: u8,
     /// The number of these lists that will be sent.

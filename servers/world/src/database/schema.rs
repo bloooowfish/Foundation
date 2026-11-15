@@ -270,3 +270,67 @@ diesel::allow_tables_to_appear_in_same_query!(
     grand_company,
     buddy,
 );
+
+diesel::table! {
+    house (house_id) {
+        house_id -> BigInt,
+        owner_id -> BigInt,
+        is_free_company -> Bool,
+        is_locked -> Bool,
+        house_type -> Integer,
+        house_name -> Text,
+        house_greeting -> Text,
+        appeal_tags -> Text,
+    }
+}
+
+diesel::table! {
+    house_exterior (house_id) {
+        house_id -> BigInt,
+        details -> Text,
+        inventory -> Text,
+        storeroom -> Text,
+    }
+}
+
+diesel::joinable!(house_exterior -> house (house_id));
+
+diesel::table! {
+    house_interior (house_id) {
+        house_id -> BigInt,
+        orchestrion_song -> Integer,
+        details -> Text,
+        inventory -> Text,
+        storeroom -> Text,
+    }
+}
+
+diesel::joinable!(house_interior -> house (house_id));
+
+diesel::table! {
+    house_ban_list (house_id) {
+        house_id -> BigInt,
+        account_id -> BigInt,
+        banned_until -> BigInt,
+    }
+}
+
+diesel::joinable!(house_ban_list -> house (house_id));
+
+diesel::table! {
+    house_shared_tenants (house_id) {
+        house_id -> BigInt,
+        account_id -> BigInt,
+        permissions -> BigInt,
+    }
+}
+
+diesel::joinable!(house_shared_tenants -> house (house_id));
+
+diesel::allow_tables_to_appear_in_same_query!(
+    house,
+    house_exterior,
+    house_interior,
+    house_ban_list,
+    house_shared_tenants,
+);

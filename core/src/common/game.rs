@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, io::Cursor, time::Duration};
 
-use binrw::{BinReaderExt, BinWrite, binrw};
+use binrw::{BinRead, BinReaderExt, BinWrite, binrw};
 use bitflags::bitflags;
 use serde_derive::{Deserialize, Serialize};
 use strum_macros::{Display, EnumIter, EnumString, FromRepr};
@@ -1167,6 +1167,21 @@ impl Default for HouseId {
     }
 }
 
+impl From<HouseId> for u64 {
+    fn from(the_id: HouseId) -> Self {
+        let mut cursor = Cursor::new(Vec::new());
+        the_id.write_le(&mut cursor).unwrap();
+        u64::from_le_bytes(cursor.into_inner().try_into().unwrap_or_default())
+    }
+}
+
+impl From<u64> for HouseId {
+    fn from(the_id: u64) -> Self {
+        let mut cursor = Cursor::new(the_id.to_le_bytes());
+        HouseId::read_le(&mut cursor).unwrap_or_default()
+    }
+}
+
 /// Used for housing.
 /// See <https://github.com/aers/FFXIVClientStructs/blob/main/FFXIVClientStructs/FFXIV/Client/Game/HousingManager.cs>
 #[binrw]
@@ -1188,10 +1203,10 @@ pub enum EstateType {
 /// See <https://github.com/aers/FFXIVClientStructs/blob/main/FFXIVClientStructs/FFXIV/Client/Game/Housing/OutdoorTerritory.cs>
 #[binrw]
 #[brw(repr = u8)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum PlotState {
-    #[default]
     None = 0,
+    #[default]
     UnownedLand = 1,
     OwnedLand = 2,
     OwnedEstate = 3,

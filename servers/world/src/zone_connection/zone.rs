@@ -6,15 +6,15 @@ use crate::{
 };
 use kawari::{
     common::{
-        FestivalId, HandlerId, HouseId, HouseUnit, HousingFlag, LandData, Position,
-        TerritoryIntendedUse, WarpType, timestamp_secs,
+        EstateType, FestivalId, HandlerId, HouseId, HouseUnit, HousingFlag, LandData, PlotState,
+        Position, TerritoryIntendedUse, WarpType, internal_housing_row, timestamp_secs,
     },
     constants::OBFUSCATION_ENABLED_MODE,
     ipc::zone::{
-        ActorControlCategory, ApartmentBuildingState, Condition, DutyFinderSetting, FurnitureList,
-        House, HouseExterior, HouseList, HouseStatus, HousingInteriorDetails, PlotSize,
-        ServerZoneIpcData, ServerZoneIpcSegment, WardDivision, WardDivisionInfo, ZoneInit,
-        ZoneInitFlags,
+        ActorControlCategory, ApartmentBuildingState, Condition, DutyFinderSetting, Furniture,
+        FurnitureList, House, HouseList, ServerZoneIpcData, ServerZoneIpcSegment,
+        UpdateMapMarkersForWardDivision, WardDivision, WardDivisionInfo, WardMapInfo,
+        WardMapInfoFlags, ZoneInit, ZoneInitFlags,
     },
     packet::{ConnectionState, PacketSegment, ScramblerKeyGenerator, SegmentData, SegmentType},
 };
@@ -290,111 +290,43 @@ impl ZoneConnection {
         if lua_zone.intended_use == TerritoryIntendedUse::HousingOutdoor
             && let InstanceQuery::Ward { ward } = query
         {
-            let mut houses = [House::default(); 30];
-
-            // First, populate the houses in this ward. Note that for now, we treat every ward the same.
-            // TODO: For now, we hardcode 3 prefab houses as demonstration units until we implement more of the system. One cottage, one house and one mansion, all set to be individually owned and locked. Plots 5, 6, and 12 were chosen due to their close proximity to each other.
-            // Glade house (Wood)
-            houses[4] = House {
-                plot_size: PlotSize::Medium,
-                status: HouseStatus::HouseBuilt,
-                flags: HousingFlag::OPEN,
-                exterior: HouseExterior {
-                    roof_id: 1029,
-                    walls_id: 3589,
-                    windows_id: 2562,
-                    door_id: 514,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            // Hingan mansion (Mokuzo)
-            houses[5] = House {
-                plot_size: PlotSize::Large,
-                status: HouseStatus::HouseBuilt,
-                flags: HousingFlag::OPEN,
-                exterior: HouseExterior {
-                    roof_id: 1081,
-                    walls_id: 3632,
-                    windows_id: 2579,
-                    door_id: 531,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            // Highland cottage (Wood)
-            houses[11] = House {
-                plot_size: PlotSize::Small,
-                status: HouseStatus::HouseBuilt,
-                flags: HousingFlag::OPEN | HousingFlag::OWNED_BY_FC,
-                exterior: HouseExterior {
-                    roof_id: 1136,
-                    walls_id: 3687,
-                    windows_id: 2598,
-                    door_id: 550,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::HouseList(
-                HouseList {
-                    land_id: 0,
-                    ward,
-                    territory_type_id: lua_zone.zone_id,
-                    world_id: self.config.world_id,
-                    division_info: WardDivisionInfo {
-                        apartment_building_state: ApartmentBuildingState::IsOwn,
-                        ward_division: WardDivision::MainDivision,
-                    },
-                    houses,
-                },
-            )))
-            .await;
-
-            // Finally, populate the exterior furniture.
-            // TODO: Actually send some real furniture, once we can do that!
-            for index in 0..15 {
-                self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
-                    FurnitureList {
-                        count: 15,
-                        index,
-                        ..Default::default()
-                    },
-                )))
-                .await;
-            }
+            self.populate_ward(new_zone_id, Some(ward as u8)).await;
         }
 
-        if lua_zone.intended_use == TerritoryIntendedUse::HousingIndoor {
-            // Bare minimum stuff to make housing interiors load
+        if lua_zone.intended_use == TerritoryIntendedUse::HousingIndoor
+            && let InstanceQuery::House { house_id } = query
+        {
+            // TODO: Reject doing anything if we entered an apartment lobby and somehow enter this code; those never have furniture and should be TerritoryIntendedUse::HousingIndoor too
+            let interior_details;
+            let mut interior_furniture;
+            {
+                let mut db = self.database.lock();
+                interior_details = db.find_house_interior_details(house_id);
+                interior_furniture = db.find_house_furniture(house_id, true, false);
+            }
+
             self.send_ipc_self(ServerZoneIpcSegment::new(
-                ServerZoneIpcData::HousingInteriorDetails(HousingInteriorDetails::default()),
+                ServerZoneIpcData::HousingInteriorDetails(interior_details.unwrap_or_default()),
             ))
             .await;
 
-            // TODO: Limit this by interior size once we have furniture persistence
+            // TODO: Limit this by interior size soon...
             for index in 0..6 {
-                // The LandId is currently set so that plugins like HousingPos/Buildingway can plop stuff down
+                let mut furniture: Vec<Furniture> = Vec::new();
+                // Take up to 100 items.
+                furniture.extend(
+                    interior_furniture
+                        .drain(0..std::cmp::min(interior_furniture.len(), Furniture::COUNT)),
+                );
+
                 self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
                     FurnitureList {
-                        id: HouseId {
-                            unit: HouseUnit {
-                                apartment_division_plot_index: 0,
-                                apartment_flag: true,
-                            },
-                            unk1: 0,
-                            room_number: 1,
-                            ward_index: 0,
-                            territory_type_id: 340,
-                            world_id: self.config.world_id,
-                        },
+                        id: house_id,
                         count: 6,
                         index,
+                        estate_type: EstateType::ApartmentRoom,
                         unk2: 100, // Indoors
-                        ..Default::default()
+                        furniture,
                     },
                 )))
                 .await;
@@ -420,6 +352,122 @@ impl ZoneConnection {
         self.initial_login = false;
     }
 
+    pub async fn populate_ward(&mut self, zone_id: u16, ward_id: Option<u8>) {
+        if let Some(ward_id) = ward_id {
+            self.ward_number = ward_id;
+        }
+
+        // First, send some house info!
+        let mut houses = [House::default(); 30];
+        let mut division_map_markers = [WardMapInfo::default(); 30];
+        let division_info = WardDivisionInfo {
+            apartment_building_state: ApartmentBuildingState::IsOwn, // TODO: Get our actual apartment state from the db
+            ward_division: if self.entering_subdivision {
+                WardDivision::SubDivision
+            } else {
+                WardDivision::MainDivision
+            },
+        };
+
+        let furniture;
+        {
+            let mut database = self.database.lock();
+            let mut gamedata = self.game_data.lock();
+            let all_houses = database.find_houses_in_ward(&mut gamedata, zone_id, self.ward_number);
+            // TODO: Furniture is always empty for now, see database/housing.rs
+            furniture = database.find_furniture_in_ward(
+                zone_id,
+                self.ward_number,
+                self.entering_subdivision,
+            );
+
+            // First get the ranges of the division we're entering, and the opposite division we're NOT entering.
+            // `database.find_houses_in_ward` returns all 60 plots in order, so we can safely divide it up in halves.
+            let (main_range, opposite_range) = if self.entering_subdivision {
+                (30..all_houses.len(), 0..30)
+            } else {
+                (0..30, 30..all_houses.len())
+            };
+
+            // Copy house info for the division we're entering.
+            houses[..].copy_from_slice(&all_houses[main_range]);
+
+            // Finally, grab house icon info for the opposite division.
+            for (house, marker) in all_houses[opposite_range]
+                .iter()
+                .zip(division_map_markers.iter_mut())
+            {
+                let mut flags = if house.status != PlotState::UnownedLand {
+                    WardMapInfoFlags::HAS_OWNER
+                } else {
+                    WardMapInfoFlags::default()
+                };
+
+                if (house.flags & HousingFlag::OWNED_BY_FC) == HousingFlag::OWNED_BY_FC {
+                    flags |= WardMapInfoFlags::IS_FREE_COMPANY;
+                }
+
+                *marker = WardMapInfo {
+                    state: house.status,
+                    size: house.plot_size,
+                    flags,
+                };
+            }
+        }
+
+        let Some(land_id) = internal_housing_row(zone_id) else {
+            tracing::error!(
+                "populate_ward: attempted to find an internal housing row for non-housing zone {zone_id}!?"
+            );
+            // TODO: Send blank info? What should we do in this error state?
+            return;
+        };
+
+        self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::HouseList(
+            HouseList {
+                land_id: land_id as u16,
+                ward: self.ward_number as u16,
+                territory_type_id: zone_id,
+                world_id: self.config.world_id,
+                division_info,
+                houses,
+            },
+        )))
+        .await;
+
+        self.send_ipc_self(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::UpdateMapMarkersForWardDivision(UpdateMapMarkersForWardDivision {
+                ward_division_info: WardDivisionInfo {
+                    apartment_building_state: ApartmentBuildingState::None, // TODO: Get the apartment state for the opposite division
+                    ward_division: if self.entering_subdivision {
+                        WardDivision::MainDivision
+                    } else {
+                        WardDivision::SubDivision
+                    },
+                },
+                info: division_map_markers,
+            }),
+        ))
+        .await;
+
+        // Finally, populate the exterior furniture.
+        // TODO: Actually send some real furniture, once we can do that!
+        for index in 0..15 {
+            self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
+                FurnitureList {
+                    estate_type: EstateType::Ward,
+                    count: 15,
+                    index,
+                    furniture: furniture.clone(),
+                    ..Default::default()
+                },
+            )))
+            .await;
+        }
+
+        self.entering_subdivision = false; // TODO: Not sure if we'll need to reset this here but it should be okay for now
+    }
+
     /// Request to teleport the player to the given `warp_id`, which is an index in the Warp Excel sheet.
     pub async fn warp(&mut self, warp_id: u32) {
         self.teleport_reason = TeleportReason::NotSpecified;
@@ -440,6 +488,7 @@ impl ZoneConnection {
         taking_offered_teleport: bool,
     ) {
         self.teleport_reason = TeleportReason::Aetheryte;
+
         self.handle
             .send(ToServer::WarpAetheryte(
                 self.id,
@@ -470,6 +519,20 @@ impl ZoneConnection {
 
         if taking_offered_teleport {
             self.offered_teleport = None;
+        }
+
+        self.entering_subdivision = false;
+
+        // If we're using the housing aethernet, we need to inform the client about the division they're going to.
+        if housing_aethernet {
+            {
+                let mut gamedata = self.game_data.lock();
+                if gamedata.is_subdivision_aetheryte(aetheryte_id) {
+                    self.entering_subdivision = true;
+                }
+            }
+            self.populate_ward(self.player_data.volatile.zone_id as u16, None)
+                .await;
         }
     }
 

@@ -1,5 +1,5 @@
 use crate::{
-    common::HousingFlag,
+    common::{HousingFlag, PlotState},
     ipc::zone::{PlotSize, WardDivisionInfo},
 };
 use binrw::binrw;
@@ -11,24 +11,13 @@ use serde_derive::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct House {
     pub plot_size: PlotSize,
-    pub status: HouseStatus,
+    pub status: PlotState,
     #[brw(pad_after = 1)]
     pub flags: HousingFlag,
     pub fc_id: u32,
     pub fc_crest_id: u32,
     pub fc_crest_id1: u32,
     pub exterior: HouseExterior,
-}
-
-#[binrw]
-#[brw(repr = u8)]
-#[derive(Clone, Copy, Debug, Default)]
-pub enum HouseStatus {
-    None = 0,
-    #[default]
-    UpForAuction = 1,
-    UnderConstruction = 2,
-    HouseBuilt = 3,
 }
 
 /// Represents a House's "pattern ids", or in other words, what models make up the house's exterior. All values are an index into the HousingExterior Excel sheet.
@@ -54,6 +43,13 @@ pub struct HouseExterior {
     pub fence_id: u16,
     /// All of the above's dyes/stains info.
     pub colors: HouseExteriorColors,
+}
+
+impl HouseExterior {
+    // TODO: There might be a better way to do this?
+    pub fn is_under_construction(&self) -> bool {
+        self.roof_id == 0 || self.walls_id == 0 || self.windows_id == 0 || self.door_id == 0
+    }
 }
 
 /// Represents a HouseExterior's dyes/stains.

@@ -447,3 +447,105 @@ pub struct Buddy {
     pub exp: i32,
     pub color: i32,
 }
+
+#[derive(Insertable, Identifiable, Queryable, Selectable, AsChangeset, Debug, Default, Clone)]
+#[diesel(table_name = super::schema::house)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[diesel(primary_key(house_id))]
+pub struct House {
+    pub house_id: i64,
+    pub owner_id: i64,
+    pub is_free_company: bool,
+    pub is_locked: bool,
+    pub house_type: i32,
+    pub house_name: String,
+    pub house_greeting: String,
+    pub appeal_tags: String,
+}
+
+#[derive(
+    Insertable,
+    Identifiable,
+    Queryable,
+    Selectable,
+    Associations,
+    AsChangeset,
+    Debug,
+    Default,
+    Clone,
+)]
+#[diesel(table_name = super::schema::house_exterior)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[diesel(belongs_to(House, foreign_key = house_id))]
+#[diesel(primary_key(house_id))]
+pub struct HouseExterior {
+    pub house_id: i64,
+    pub details: String,
+    pub inventory: String,
+    pub storeroom: String,
+}
+
+#[derive(
+    Insertable,
+    Identifiable,
+    Queryable,
+    Selectable,
+    Associations,
+    AsChangeset,
+    Debug,
+    Default,
+    Clone,
+)]
+#[diesel(table_name = super::schema::house_interior)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[diesel(belongs_to(House, foreign_key = house_id))]
+#[diesel(primary_key(house_id))]
+pub struct HouseInterior {
+    pub house_id: i64,
+    pub orchestrion_song: i32,
+    pub details: String,
+    pub inventory: String,
+    pub storeroom: String,
+}
+
+#[derive(
+    Insertable,
+    Identifiable,
+    Queryable,
+    Selectable,
+    Associations,
+    AsChangeset,
+    Debug,
+    Default,
+    Clone,
+)]
+#[diesel(table_name = super::schema::house_ban_list)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[diesel(belongs_to(House, foreign_key = house_id))]
+#[diesel(primary_key(house_id))]
+pub struct HouseBanList {
+    pub house_id: i64,
+    pub account_id: i64,
+    pub banned_until: i64,
+}
+
+#[derive(
+    Insertable,
+    Identifiable,
+    Queryable,
+    Selectable,
+    Associations,
+    AsChangeset,
+    Debug,
+    Default,
+    Clone,
+)]
+#[diesel(table_name = super::schema::house_shared_tenants)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[diesel(belongs_to(House, foreign_key = house_id))]
+#[diesel(primary_key(house_id))]
+pub struct HouseSharedTenants {
+    pub house_id: i64,
+    pub account_id: i64,
+    pub permissions: i64,
+}

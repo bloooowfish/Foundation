@@ -592,6 +592,16 @@ impl GameData {
         }
     }
 
+    pub fn is_subdivision_aetheryte(&mut self, aetheryte_id: u32) -> bool {
+        if let Ok(sheet) = HousingAethernetSheet::read_from(&mut self.resource, Language::None)
+            && let Some(row) = sheet.row(aetheryte_id)
+        {
+            // For now at least, all subdivision aetherytes have a value of 8 or higher.
+            return row.Order >= 8;
+        }
+        false
+    }
+
     /// Checks if it's a big Aetheryte (true) or just a shard (false.)
     pub fn is_aetheryte(&mut self, aetheryte_id: u32) -> bool {
         let config = get_config();

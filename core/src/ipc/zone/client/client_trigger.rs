@@ -358,6 +358,29 @@ pub enum ClientTriggerCommand {
         page: u32,
     },
 
+    /// When a player interacts with an unoccupied Placard in a ward.
+    #[brw(magic = 1105u32)]
+    RequestHousingVacantPlotInfo {
+        /// The zone id of the housing ward.
+        zone_id: u32,
+        /// 0-based index, so plot number - 1.
+        plot_index: u8,
+        /// 0-based index, so ward number - 1.
+        #[brw(pad_after = 2)] // TODO: is this needed?
+        ward_index: u8,
+    },
+
+    /// When a player interacts with an occupied Placard in a ward.
+    #[brw(magic = 1106u32)]
+    RequestHousingOccupiedPlotInfo {
+        /// The zone id of the housing ward.
+        zone_id: u32,
+        /// 0-based index, so plot number - 1.
+        plot_index: u8,
+        #[brw(pad_after = 2)] // TODO: is this needed?
+        ward_index: u8,
+    },
+
     #[brw(magic = 1107u32)]
     RequestHousingWardInfo {
         /// The zone id of the housing ward.
@@ -410,6 +433,17 @@ pub enum ClientTriggerCommand {
     RequestApartmentList {
         /// The desired starting index of apartments.
         starting_index: u32,
+    },
+
+    /// When a player right clicks an apartment in the list to retrieve its estate info.
+    #[brw(magic = 1126u32)]
+    RequestApartmentInfo {
+        /// The zone id of the housing ward.
+        zone_id: u32,
+        /// 0-based index, so room number - 1.
+        apartment_room_number: u8,
+        #[brw(pad_after = 2)] // TODO: is this needed?
+        ward_index: u8,
     },
 
     /// The client sets the interior lighting level.
