@@ -2535,6 +2535,8 @@ pub async fn server_main_loop(
                             client_id,
                             from_actor_id,
                         );
+                    } else {
+                        tracing::warn!("Can't find player {name} to call!");
                     }
                 }
                 ToServer::EquipGlasses(from_actor_id, slot, id) => {
