@@ -21,7 +21,9 @@ pub enum LuaTask {
         warp_id: u32,
     },
     BeginLogOut,
-    FinishEvent,
+    FinishEvent {
+        nested_args: Vec<i32>,
+    },
     UnlockClassJob {
         classjob_id: u8,
     },

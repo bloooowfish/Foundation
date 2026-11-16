@@ -38,6 +38,6 @@ impl EventHandler for ContentEventHandler {
                 ))
                 .await;
         }
-        player.finish_event();
+        player.finish_event(Vec::default());
     }
 }

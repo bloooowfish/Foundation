@@ -431,7 +431,7 @@ impl EventHandler for ShopEventHandler {
                 );
             }
         } else {
-            player.finish_event();
+            player.finish_event(Vec::default());
         }
     }
 }

@@ -534,6 +534,13 @@ impl GameData {
         Some((row.PopRange, row.TerritoryType))
     }
 
+    /// Returns the handler id for this warp's success condition.
+    pub fn get_warp_default_talk_success(&mut self, warp_id: u32) -> Option<u32> {
+        let row = self.warp_sheet.row(warp_id)?;
+
+        Some(row.ConditionSuccessEvent)
+    }
+
     /// Returns the warp logic name (if any) for this Warp.
     pub fn get_warp_logic_name(&mut self, warp_id: u32) -> String {
         let row = self.warp_sheet.row(warp_id).unwrap();
@@ -1756,6 +1763,12 @@ impl mlua::UserData for GameData {
         });
         methods.add_method_mut("lookup_gold_saucer_content", |_, this, id: u32| {
             Ok(this.lookup_gold_saucer_content(id))
+        });
+        methods.add_method_mut("get_warp_default_talk_success", |_, this, id: u32| {
+            Ok(this.get_warp_default_talk_success(id))
+        });
+        methods.add_method_mut("get_warp_territory_type", |_, this, id: u32| {
+            Ok(this.get_warp(id).map(|x| x.1))
         });
     }
 }

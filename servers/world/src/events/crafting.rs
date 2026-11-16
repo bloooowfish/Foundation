@@ -116,7 +116,7 @@ impl EventHandler for CraftingEventHandler {
             player.play_scene(0, SceneFlags::NO_DEFAULT_CAMERA, vec![4, 0, 0, 0]);
         } else if results[0] == 7 {
             // Manually quit
-            player.finish_event();
+            player.finish_event(Vec::default());
         }
     }
 

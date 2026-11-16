@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use mlua::{LuaSerdeExt, UserData, UserDataFields};
+use mlua::{UserData, UserDataFields};
 
 use kawari::{
     common::{ObjectId, Position, TerritoryIntendedUse},
@@ -33,7 +33,7 @@ impl UserData for LuaZone {
         fields.add_field_method_get("internal_name", |_, this| Ok(this.internal_name.clone()));
         fields.add_field_method_get("region_name", |_, this| Ok(this.region_name.clone()));
         fields.add_field_method_get("place_name", |_, this| Ok(this.place_name.clone()));
-        fields.add_field_method_get("intended_use", |lua, this| lua.to_value(&this.intended_use));
+        fields.add_field_method_get("intended_use", |_, this| Ok(this.intended_use));
     }
 }
 

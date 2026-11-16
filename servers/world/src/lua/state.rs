@@ -11,7 +11,7 @@ use crate::{
     inventory::{CrystalKind, CurrencyKind},
 };
 use kawari::{
-    common::{HandlerType, WORLD_NAME},
+    common::{HandlerType, TerritoryIntendedUse, WORLD_NAME},
     config::get_config,
     ipc::zone::{Condition, DamageType, EventType, GameMasterRank, SceneFlags, ServerNoticeFlags},
 };
@@ -40,6 +40,7 @@ impl KawariLua {
         Self::register_enum::<CrystalKind>(&mut lua, "CRYSTAL");
         Self::register_enum::<DamageType>(&mut lua, "DAMAGE_TYPE");
         Self::register_enum::<Condition>(&mut lua, "CONDITION");
+        Self::register_enum::<TerritoryIntendedUse>(&mut lua, "TERRITORY_INTENDED_USE");
 
         // Needed by some GM commands and events
         let race_func = lua

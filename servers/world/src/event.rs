@@ -59,7 +59,7 @@ pub trait EventHandler: std::fmt::Debug + Send + Sync {
         player: &mut LuaPlayer,
     ) {
         // TODO: Check back later and see if we're OK with this somewhat magical behavior
-        player.finish_event();
+        player.finish_event(Vec::default());
     }
 
     /// Condition to set (or unset) for this handler.

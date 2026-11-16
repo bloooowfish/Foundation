@@ -153,8 +153,8 @@ impl LuaPlayer {
         self.queued_tasks.push(LuaTask::BeginLogOut);
     }
 
-    pub fn finish_event(&mut self) {
-        self.queued_tasks.push(LuaTask::FinishEvent {});
+    pub fn finish_event(&mut self, nested_args: Vec<i32>) {
+        self.queued_tasks.push(LuaTask::FinishEvent { nested_args });
     }
 
     fn unlock_classjob(&mut self, classjob_id: u8) {
@@ -682,8 +682,8 @@ impl UserData for LuaPlayer {
             this.begin_log_out();
             Ok(())
         });
-        methods.add_method_mut("finish_event", |_, this, _: ()| {
-            this.finish_event();
+        methods.add_method_mut("finish_event", |lua, this, nested_args: Value| {
+            this.finish_event(lua.from_value(nested_args).unwrap_or_default());
             Ok(())
         });
         methods.add_method_mut("unlock_classjob", |_, this, classjob_id: u8| {

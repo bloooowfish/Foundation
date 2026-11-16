@@ -43,6 +43,7 @@ impl ZoneConnection {
         // We can't do this in the loop!'
         let mut run_finish_event = false;
         let mut continue_nesting = false;
+        let mut last_nested_args = Vec::new();
 
         let tasks = player.queued_tasks.clone();
         player.queued_tasks.clear();
@@ -73,7 +74,8 @@ impl ZoneConnection {
                     self.warp(*warp_id).await;
                 }
                 LuaTask::BeginLogOut => self.begin_log_out().await,
-                LuaTask::FinishEvent => {
+                LuaTask::FinishEvent { nested_args } => {
+                    last_nested_args = nested_args.clone();
                     self.event_finish(events).await;
                     run_finish_event = true;
                 }
@@ -827,10 +829,12 @@ impl ZoneConnection {
         if run_finish_event {
             // To handle PreHandler's & others nesting, which is probably not going to scale.
             if let Some(event) = events.last() {
-                // TODO: Introduce a proper "we returned from nesting" function maybe?
-                event.0.on_return(&event.1, self, 255, &[], player).await;
+                // TODO: Introduce a proper "we returned from nesting" function
+                event
+                    .0
+                    .on_return(&event.1, self, 255, &last_nested_args, player)
+                    .await;
             }
-            self.event_finish(events).await;
 
             return true;
         }

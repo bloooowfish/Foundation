@@ -83,7 +83,7 @@ impl EventHandler for GimmickRectEventHandler {
         if results.len() == 1 && results[0] == 0 {
             player.abandon_content();
         }
-        player.finish_event();
+        player.finish_event(Vec::default());
     }
 
     fn condition(&self) -> Condition {

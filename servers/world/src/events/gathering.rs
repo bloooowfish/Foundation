@@ -210,7 +210,7 @@ impl EventHandler for GatheringEventHandler {
 
         // quit
         if scene == 0 && results[2] == 0 {
-            player.finish_event();
+            player.finish_event(Vec::default());
             return;
         }
 

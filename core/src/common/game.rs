@@ -5,7 +5,7 @@ use std::{collections::HashMap, io::Cursor, time::Duration};
 use binrw::{BinReaderExt, BinWrite, binrw};
 use bitflags::bitflags;
 use serde_derive::{Deserialize, Serialize};
-use strum_macros::{Display, EnumIter, FromRepr};
+use strum_macros::{Display, EnumIter, EnumString, FromRepr};
 
 use crate::{festivals::festival_name, ipc::zone::DutyFinderSetting, opcodes::ClientZoneIpcType};
 
@@ -1655,7 +1655,20 @@ pub enum GimmickRectTriggerType {
 ///
 /// Based off of <https://github.com/aers/FFXIVClientStructs/blob/main/FFXIVClientStructs/FFXIV/Client/Enums/TerritoryIntendedUse.cs>.
 #[repr(u8)]
-#[derive(FromRepr, Display, Clone, Copy, PartialEq, Debug, Default, Deserialize, Serialize)]
+#[derive(
+    FromRepr,
+    Display,
+    Clone,
+    Copy,
+    PartialEq,
+    Debug,
+    Default,
+    Deserialize,
+    Serialize,
+    EnumIter,
+    EnumString,
+)]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 pub enum TerritoryIntendedUse {
     /// Towns such as Limsa Lominsa.
     #[default]
@@ -1792,6 +1805,23 @@ pub enum TerritoryIntendedUse {
     KeyboundBrawler = 65,
     /// Currently unused.
     Unknown66 = 66,
+}
+
+#[cfg(feature = "server")]
+impl mlua::IntoLua for TerritoryIntendedUse {
+    fn into_lua(self, _: &mlua::Lua) -> mlua::Result<mlua::Value> {
+        Ok(mlua::Value::Integer(self as i64))
+    }
+}
+
+#[cfg(feature = "server")]
+impl mlua::FromLua for TerritoryIntendedUse {
+    fn from_lua(value: mlua::Value, _: &mlua::Lua) -> mlua::Result<Self> {
+        match value {
+            mlua::Value::Integer(integer) => Ok(Self::from_repr(integer as u8).unwrap()),
+            _ => Err(mlua::Error::UserDataTypeMismatch),
+        }
+    }
 }
 
 #[cfg(test)]

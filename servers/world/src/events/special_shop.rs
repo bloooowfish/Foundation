@@ -164,7 +164,7 @@ impl EventHandler for SpecialShopEventHandler {
     ) {
         if scene == Self::SCENE_ITEM_BOUGHT {
             if Self::process_shop_event_return(self, connection, event, results).await {
-                player.finish_event();
+                player.finish_event(Vec::default());
             }
         } else if scene == Self::SCENE_SHOW_SHOP {
             player.play_scene(
@@ -173,7 +173,7 @@ impl EventHandler for SpecialShopEventHandler {
                 Vec::new(),
             );
         } else {
-            player.finish_event();
+            player.finish_event(Vec::default());
         }
     }
 }

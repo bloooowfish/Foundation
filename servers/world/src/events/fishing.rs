@@ -32,7 +32,7 @@ impl EventHandler for FishingEventHandler {
         player: &mut LuaPlayer,
     ) {
         if scene == Self::SCENE_HIDING_ROD {
-            player.finish_event();
+            player.finish_event(Vec::default());
         }
     }
 
