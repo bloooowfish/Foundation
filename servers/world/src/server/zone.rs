@@ -1309,8 +1309,7 @@ pub fn handle_zone_messages(
                 &lua,
                 if *housing_aethernet {
                     None
-                }
-                else {
+                } else {
                     Some(destination_zone_id)
                 },
                 destination_instance_id,
