@@ -42,7 +42,7 @@ function getApartmentIds(id, division_index)
     local pop_range_id = nil
 
     if id == AETHERYTE_S1H1_PRIVATE_APARTMENT then
-        territory_id = 339
+        territory_id = TERRITORY_S1H1
 
         if is_main_division then
             pop_range_id = 6486032
@@ -50,7 +50,7 @@ function getApartmentIds(id, division_index)
             pop_range_id = 6486040
         end
     elseif id == AETHERYTE_F1H1_PRIVATE_APARTMENT then
-        territory_id = 340
+        territory_id = TERRITORY_F1H1
 
         if is_main_division then
             pop_range_id = 6486042
@@ -58,7 +58,7 @@ function getApartmentIds(id, division_index)
             pop_range_id = 6486043
         end
     elseif id == AETHERYTE_W1H1_PRIVATE_APARTMENT then
-        territory_id = 341
+        territory_id = TERRITORY_W1H1
 
         if is_main_division then
             pop_range_id = 6486045
@@ -66,7 +66,7 @@ function getApartmentIds(id, division_index)
             pop_range_id = 6486053
         end
     elseif id == AETHERYTE_E1H1_PRIVATE_APARTMENT then
-        territory_id = 641
+        territory_id = TERRITORY_E1H1
 
         if is_main_division then
             pop_range_id = 6793801
@@ -74,7 +74,7 @@ function getApartmentIds(id, division_index)
             pop_range_id = 6793819
         end
     elseif id == AETHERYTE_R1H1_PRIVATE_APARTMENT then
-        territory_id = 979
+        territory_id = TERRITORY_R1H1
 
         if is_main_division then
             pop_range_id = 8710380
@@ -106,7 +106,7 @@ function getEstateIds(id, plot_index)
     local pop_range_id = nil
 
     if id == AETHERYTE_S1H1_FC or id == AETHERYTE_S1H1_PRIVATE_APARTMENT then
-        territory_id = 339
+        territory_id = TERRITORY_S1H1
 
         if is_main_division then
             pop_range_id = 4387629 + plot_index
@@ -114,7 +114,7 @@ function getEstateIds(id, plot_index)
             pop_range_id = 5347391 + plot_index
         end
     elseif id == AETHERYTE_F1H1_FC or id == AETHERYTE_F1H1_PRIVATE_APARTMENT then
-        territory_id = 340
+        territory_id = TERRITORY_F1H1
 
         if is_main_division then
             pop_range_id = 4508875 + plot_index
@@ -122,7 +122,7 @@ function getEstateIds(id, plot_index)
             pop_range_id = 5364207 + plot_index
         end
     elseif id == AETHERYTE_W1H1_FC or id == AETHERYTE_W1H1_PRIVATE_APARTMENT then
-        territory_id = 341
+        territory_id = TERRITORY_W1H1
 
         if is_main_division then
             pop_range_id = 4508781 + plot_index
@@ -130,7 +130,7 @@ function getEstateIds(id, plot_index)
             pop_range_id = 5362502 + plot_index
         end
     elseif id == AETHERYTE_E1H1_FC or id == AETHERYTE_E1H1_PRIVATE_APARTMENT then
-        territory_id = 641
+        territory_id = TERRITORY_E1H1
 
         if is_main_division then
             pop_range_id = 6791358 + plot_index
@@ -138,7 +138,7 @@ function getEstateIds(id, plot_index)
             pop_range_id = 6791423 + plot_index
         end
     elseif id == AETHERYTE_R1H1_FC or id == AETHERYTE_R1H1_PRIVATE_APARTMENT then
-        territory_id = 979
+        territory_id = TERRITORY_R1H1
 
         if is_main_division then
             pop_range_id = 8698095 + plot_index
