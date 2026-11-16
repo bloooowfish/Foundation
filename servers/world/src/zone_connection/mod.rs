@@ -58,6 +58,8 @@ mod zone;
 #[derive(Debug, Default, Clone)]
 pub struct TeleportQuery {
     pub aetheryte_id: u16,
+    /// TODO: Determine if this is used for anything else than Apartment flag.
+    pub unk_flags: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]

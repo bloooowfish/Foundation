@@ -450,6 +450,8 @@ impl ZoneConnection {
         if self.can_offer_teleport() {
             let teleport_info = TeleportQuery {
                 aetheryte_id: aetheryte_id as u16,
+                // TODO: Verify if this does get sent at all to other players
+                unk_flags: 0,
             };
 
             self.handle

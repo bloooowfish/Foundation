@@ -1273,7 +1273,9 @@ pub async fn server_main_loop(
                 }
                 ToServer::ClientTrigger(from_id, from_actor_id, trigger) => {
                     match &trigger.trigger {
-                        ClientTriggerCommand::TeleportQuery { aetheryte_id, .. } => {
+                        ClientTriggerCommand::TeleportQuery {
+                            aetheryte_id, unk2, ..
+                        } => {
                             let msg =
                                 FromServer::ActorControlSelf(ActorControlCategory::TeleportStart {
                                     insufficient_gil: 0,
@@ -1294,7 +1296,8 @@ pub async fn server_main_loop(
                             {
                                 match actor {
                                     NetworkedActor::Player { teleport_query, .. } => {
-                                        teleport_query.aetheryte_id = *aetheryte_id as u16
+                                        teleport_query.aetheryte_id = *aetheryte_id as u16;
+                                        teleport_query.unk_flags = *unk2
                                     }
                                     _ => unreachable!(),
                                 }

@@ -55,5 +55,6 @@ fn create_ipc_target<T: QueueSegments>(
 impl UserData for TeleportQuery {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("aetheryte_id", |_, this| Ok(this.aetheryte_id));
+        fields.add_field_method_get("unk_flags", |_, this| Ok(this.unk_flags));
     }
 }
