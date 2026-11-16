@@ -30,6 +30,7 @@ These are commands already built-in into the FFXIV client. Normally only availab
 | `//gm icon <id>` | Sets your online status to the given ID. |
 | `//gm item <id>` | Gives yourself an item. This can only place a single item in the first page of your inventory currently. |
 | `//gm immediatelyaction 1` | Removes action cooldowns. There is no way to turn this off without logging out. |
+| `//gm inspect` | Prints info about the player. |
 | `//gm jump <name>` | Teleports to this player. |
 | `//gm kill` | Kills the selected player, but only affects you for now. |
 | `//gm lv <level>` | Sets your current level. |

@@ -11,6 +11,7 @@ GM_SET_TRIBE = 3
 GM_SET_SEX = 4
 GM_CHANGE_WEATHER = 6
 GM_CALL = 7
+GM_INSPECT = 8
 GM_SPEED = 9
 GM_INVISIBILITY = 13
 GM_KILL = 14
@@ -34,7 +35,6 @@ GM_GC = 340
 GM_GCRANK = 341
 GM_AETHERYTE = 350
 GM_CUTFLG = 356
-GM_INSPECT = 422
 GM_HOWTO = 500
 GM_WIREFRAME = 550
 GM_TERRITORY = 600
@@ -50,14 +50,13 @@ registerGMCommand(GM_SET_TRIBE,          GM_DIR.."SetTribe.lua")
 registerGMCommand(GM_SET_SEX,            GM_DIR.."SetSex.lua")
 registerGMCommand(GM_CHANGE_WEATHER,     GM_DIR.."ChangeWeather.lua")
 registerGMCommand(GM_CALL,               GM_DIR.."Call.lua")
+registerGMCommand(GM_INSPECT,            GM_DIR.."InspectPlayer.lua")
 registerGMCommand(GM_SPEED,              GM_DIR.."SetSpeed.lua")
 registerGMCommand(GM_INVISIBILITY,       GM_DIR.."ToggleInvisibility.lua")
 registerGMCommand(GM_KILL,               GM_DIR.."Kill.lua")
 registerGMCommand(GM_ICON,               GM_DIR.."Icon.lua")
 registerGMCommand(GM_SET_HP,             GM_DIR.."SetHP.lua")
 registerGMCommand(GM_SET_MP,             GM_DIR.."SetMP.lua")
--- TODO: Implement the GMInspect IPC opcode, it's completely different than the normal GMCommand opcode
---registerGMCommand(GM_INSPECT,           GM_DIR.."InspectPlayer.lua")
 registerGMCommand(GM_EXP,                GM_DIR.."Exp.lua")
 registerGMCommand(GM_GET_REST,           GM_DIR.."GetRest.lua")
 registerGMCommand(GM_ORCHESTRION,        GM_DIR.."Orchestrion.lua")
@@ -90,7 +89,6 @@ registerGMCommand(GM_REWARD,             GM_DIR.."Reward.lua")
 registerCommand("cf",                               DBG_DIR.."JoinContent.lua")
 registerCommand("classjob",                         DBG_DIR.."ClassJob.lua")
 registerCommand("festival",                         DBG_DIR.."Festival.lua")
-registerCommand("inspect",                          GM_DIR.."InspectPlayer.lua") -- TODO: remove this once we figure out the GMInspect IPC opcode
 registerCommand("itemlevel",                        DBG_DIR.."SetItemLevel.lua")
 registerCommand("monies",                           DBG_DIR.."Monies.lua")
 registerCommand("nudge",                            DBG_DIR.."Nudge.lua")
