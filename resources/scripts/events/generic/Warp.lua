@@ -1,7 +1,6 @@
 -- Generic handler for Warps
 -- Use this for most warps that are just a yes/no option
 
-local played_default_talk = false
 local is_residental_menu = false
 
 function onTalk(target, player)
@@ -19,32 +18,31 @@ function onTalk(target, player)
 end
 
 function onReturn(scene, results, player)
-    -- HACK: 255 is not a real scene, this is a Kawari implementation detail to tell we returned from nesting
-    -- TODO: with nested args now we really do need a dedicated API for this!
-    if scene == 255 then
-        if not played_default_talk then
-            played_default_talk = true
-
-            player:play_scene(00000, HIDE_HOTBAR, {})
+    if results[1] == 1 then
+        if is_residental_menu then
+            -- open the housing menu
+            local target_territory = GAME_DATA:get_warp_territory_type(EVENT_ID)
+            player:start_event(HOUSING_EXIT_RANGE, EVENT_TYPE_NEST, 0)
+            player:play_scene(0, HIDE_HOTBAR | NO_DEFAULT_CAMERA, {target_territory})
             return
-        end
-        if results[1] == 1 then
-            -- ExitRange told us to warp out of the residental district
+        else
             player:warp(EVENT_ID)
-        end
-    else
-        if results[1] == 1 then
-            if is_residental_menu then
-                -- open the housing menu
-                local target_territory = GAME_DATA:get_warp_territory_type(EVENT_ID)
-                player:start_event(1310721, EVENT_TYPE_NEST, 0)
-                player:play_scene(0, HIDE_HOTBAR | NO_DEFAULT_CAMERA, {target_territory})
-                return
-            else
-                player:warp(EVENT_ID)
-            end
         end
     end
 
+    player:finish_event()
+end
+
+function onNestedEventFinished(handler, results, player)
+    if handler == HANDLER_TYPE_DEFAULT_TALK then
+        played_default_talk = true
+
+        player:play_scene(00000, HIDE_HOTBAR, {})
+        return
+    end
+    if handler == HANDLER_TYPE_EXIT_RANGE and results[1] == 1 then
+        -- ExitRange told us to warp out of the residental district
+        player:warp(EVENT_ID)
+    end
     player:finish_event()
 end

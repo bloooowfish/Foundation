@@ -67,6 +67,7 @@ TERRITORY_R2T1 = 418 -- Foundation
 TERRITORY_E3T1 = 628 -- Kugane
 TERRITORY_E1H1 = 641 -- Shirogane
 TERRITORY_R1H1 = 979 -- Empyreum
+HOUSING_EXIT_RANGE = 1310721 -- Event handler for the residental housing menu
 
 -- As seen in the client
 OPENING_SEQ_0 = 0 -- Hasn't seen the cutscene

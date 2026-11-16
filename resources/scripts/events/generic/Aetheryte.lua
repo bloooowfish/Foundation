@@ -68,7 +68,7 @@ function onReturn(scene, results, player)
             end
 
             -- open the housing menu
-            player:start_event(1310721, EVENT_TYPE_NEST, 0)
+            player:start_event(HOUSING_EXIT_RANGE, EVENT_TYPE_NEST, 0)
             player:play_scene(0, HIDE_HOTBAR | NO_DEFAULT_CAMERA, {housing_id})
             return
         end

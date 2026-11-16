@@ -62,6 +62,17 @@ pub trait EventHandler: std::fmt::Debug + Send + Sync {
         player.finish_event(Vec::default());
     }
 
+    /// When the nested event finishes.
+    async fn on_nested_event_finished(
+        &self,
+        event: &Event,
+        connection: &mut ZoneConnection,
+        nested_event_id: HandlerId,
+        results: &[i32],
+        player: &mut LuaPlayer,
+    ) {
+    }
+
     /// Condition to set (or unset) for this handler.
     fn condition(&self) -> Condition {
         Condition::OccupiedInQuestEvent

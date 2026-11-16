@@ -45,18 +45,15 @@ function onTalk(target, player)
     player:play_scene(0, HIDE_HOTBAR | NO_DEFAULT_CAMERA, {})
 end
 
-function onReturn(scene, results, player)
-    -- HACK: 255 is not a real scene, this is a Kawari implementation detail to tell we returned from nesting
-    if scene == 255 then
-        local rank = player:get_territory_fate_rank()
-        local special_shop_id = determineSpecialShop(rank)
-        if special_shop_id ~= nil then
-            local target_event_id = GAME_DATA:get_fate_special_shop(BASE_ID, special_shop_id)
+function onNestedEventFinished(handler, results, player)
+    local rank = player:get_territory_fate_rank()
+    local special_shop_id = determineSpecialShop(rank)
+    if special_shop_id ~= nil then
+        local target_event_id = GAME_DATA:get_fate_special_shop(BASE_ID, special_shop_id)
 
-            player:start_event(target_event_id, EVENT_TYPE_NEST, 0)
-            player:play_scene(0, HIDE_HOTBAR | NO_DEFAULT_CAMERA, {})
-            return
-        end
+        player:start_event(target_event_id, EVENT_TYPE_NEST, 0)
+        player:play_scene(0, HIDE_HOTBAR | NO_DEFAULT_CAMERA, {})
+        return
     end
 
     player:finish_event()

@@ -215,6 +215,34 @@ impl EventHandler for LuaEventHandler {
         }
     }
 
+    async fn on_nested_event_finished(
+        &self,
+        _event: &Event,
+        _connection: &mut ZoneConnection,
+        nested_event_id: HandlerId,
+        results: &[i32],
+        player: &mut LuaPlayer,
+    ) {
+        let mut run_script = || {
+            self.lua.0.scope(|scope| {
+                let player = scope.create_userdata_ref_mut(player)?;
+
+                let func: Function = self.lua.0.globals().get("onNestedEventFinished")?;
+
+                func.call::<()>((nested_event_id.handler_type(), results, player))?;
+
+                Ok(())
+            })
+        };
+        if let Err(err) = run_script() {
+            tracing::warn!(
+                "Syntax error while calling onNestedEventFinished in {}: {:?}",
+                self.file_name,
+                err
+            );
+        }
+    }
+
     fn condition(&self) -> Condition {
         self.lua
             .0
