@@ -138,7 +138,21 @@ impl ZoneConnection {
         {
             let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::OwnedHousing {
                 unk1: Default::default(),
-                unk2: Default::default(),
+                unk2: LandData {
+                    id: HouseId {
+                        unit: HouseUnit {
+                            apartment_division_plot_index: 0,
+                            apartment_flag: false,
+                        },
+                        unk1: 0,
+                        ward_index: 0,
+                        room_number: 0,
+                        territory_type_id: 340,
+                        world_id: self.config.world_id,
+                    },
+                    flags: 3,
+                    unk1: 0,
+                },
                 unk3: Default::default(),
                 unk4: Default::default(),
                 unk5: Default::default(),
