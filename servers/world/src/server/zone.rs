@@ -1307,7 +1307,12 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 &lua,
-                Some(destination_zone_id),
+                if *housing_aethernet {
+                    None
+                }
+                else {
+                    Some(destination_zone_id)
+                },
                 destination_instance_id,
                 *actor_id,
                 *from_id,
