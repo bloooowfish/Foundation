@@ -53,7 +53,7 @@ function onCommand(player, args, name)
             player.zone.region_name, player.zone.place_name,
             player.zone.internal_name, player.zone.id,
             player.position.x, player.position.y, player.position.z,
-            player.rotation, player.gil)
+            player.rotation, player.inventory.currency.gil.quantity)
 
     command_sender = "" -- hush further sender printfs, it looks ugly here
 

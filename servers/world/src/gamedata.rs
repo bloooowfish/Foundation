@@ -1582,16 +1582,6 @@ impl GameData {
             .map(|x| x.1.Spot)
     }
 
-    /// Returns the EObj base ID for a given event ID, if none returns 0.
-    pub fn find_eobj_base_id(&mut self, id: u32) -> u32 {
-        self.eobj_sheet
-            .into_iter()
-            .flatten_subrows()
-            .find(|x| x.1.Data == id)
-            .map(|x| x.0)
-            .unwrap_or_default()
-    }
-
     /// Returns the pop range ID for this public content, if one is defined.
     pub fn find_public_content_pop_range(&mut self, id: u32) -> Option<u32> {
         Some(self.public_content_sheet.row(id)?.LGBPopRange).filter(|x| *x != 0)
@@ -1763,9 +1753,6 @@ impl mlua::UserData for GameData {
         );
         methods.add_method_mut("lookup_ikd_route_content", |_, this, id: u32| {
             Ok(this.lookup_ikd_route_content(id))
-        });
-        methods.add_method_mut("find_eobj_base_id", |_, this, id: u32| {
-            Ok(this.find_eobj_base_id(id))
         });
         methods.add_method_mut("lookup_gold_saucer_content", |_, this, id: u32| {
             Ok(this.lookup_gold_saucer_content(id))

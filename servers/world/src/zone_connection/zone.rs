@@ -20,7 +20,7 @@ use kawari::{
 };
 
 impl ZoneConnection {
-    /// Request the global server state to change our zone.
+    /// Request to change the zone to a given TerritoryType and position/rotation.
     pub async fn change_zone(
         &mut self,
         new_zone_id: u16,
@@ -43,7 +43,7 @@ impl ZoneConnection {
             .await;
     }
 
-    /// Handle the zone change information from the server state.
+    /// Completes the zone change.
     pub async fn handle_zone_change(
         &mut self,
         new_zone_id: u16,
@@ -420,6 +420,7 @@ impl ZoneConnection {
         self.initial_login = false;
     }
 
+    /// Request to teleport the player to the given `warp_id`, which is an index in the Warp Excel sheet.
     pub async fn warp(&mut self, warp_id: u32) {
         self.teleport_reason = TeleportReason::NotSpecified;
         self.handle
@@ -431,6 +432,7 @@ impl ZoneConnection {
             .await;
     }
 
+    /// Request to teleport the player to the given `aetheryte_id`, which is an index in the Aetheryte Excel sheet.
     pub async fn warp_aetheryte(
         &mut self,
         aetheryte_id: u32,

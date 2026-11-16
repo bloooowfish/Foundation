@@ -93,18 +93,6 @@ impl UserData for EffectsBuilder {
             }));
             Ok(())
         });
-        methods.add_method_mut("execute_combo", |_, this, sequence: u8| {
-            this.effects
-                .push(TargetEffect(TargetEffectKind::ExecuteCombo {
-                    sequence,
-                    unk2: 0,
-                    unk3: 0,
-                    unk4: 0,
-                    unk5: 128,
-                    action_id: 0, // Filled in later
-                }));
-            Ok(())
-        });
         methods.add_method_mut("summon_companion", |_, this, _: ()| {
             this.effects
                 .push(TargetEffect(TargetEffectKind::SummonCompanion {

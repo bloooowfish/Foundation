@@ -11,7 +11,7 @@ use crate::{
     zone_connection::BaseParameters,
 };
 use kawari::{
-    common::{ObjectTypeId, ObjectTypeKind, Position},
+    common::Position,
     ipc::zone::{
         ActorControlCategory, ActorControlSelf, ActorSetPos, EventType, GrandCompany, OnlineStatus,
         SceneFlags, ServerNoticeFlags, ServerNoticeMessage, ServerZoneIpcData,
@@ -1025,10 +1025,6 @@ impl UserData for LuaPlayer {
             this.finish_dyeing();
             Ok(())
         });
-        methods.add_method_mut("get_territory_fate_rank", |_, this, _: ()| {
-            this.finish_dyeing();
-            Ok(())
-        });
         methods.add_method_mut("get_territory_fate_rank", |lua, this, _: ()| {
             Ok(this.get_territory_fate_rank(lua.globals().get("GAME_DATA").unwrap()))
         });
@@ -1049,12 +1045,6 @@ impl UserData for LuaPlayer {
     }
 
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("id", |_, this| {
-            Ok(ObjectTypeId {
-                object_id: this.player_data.character.actor_id,
-                object_type: ObjectTypeKind::None,
-            })
-        });
         fields.add_field_method_get("teleport_query", |_, this| {
             Ok(this.player_data.teleport_query.clone())
         });
@@ -1064,9 +1054,6 @@ impl UserData for LuaPlayer {
             Ok(this.player_data.inventory.clone())
         });
         fields.add_field_method_get("zone", |_, this| Ok(this.zone_data.clone()));
-        fields.add_field_method_get("gil", |_, this| {
-            Ok(this.player_data.inventory.currency.gil.quantity)
-        });
         fields.add_field_method_get("saw_inn_wakeup", |_, this| {
             Ok(this.player_data.saw_inn_wakeup)
         });

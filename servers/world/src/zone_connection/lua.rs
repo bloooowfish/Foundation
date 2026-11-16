@@ -131,7 +131,7 @@ impl ZoneConnection {
                         .await;
                 }
                 LuaTask::ToggleInvisibility { invisible } => {
-                    self.toggle_invisibility(*invisible).await;
+                    self.set_invisibility(*invisible).await;
                 }
                 LuaTask::Unlock { id } => {
                     self.player_data.unlock.unlocks.set(*id);

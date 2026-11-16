@@ -237,7 +237,7 @@ pub enum ActorControlCategory {
     },
 
     #[brw(magic = 38u32)]
-    ToggleInvisibility {
+    SetInvisibility {
         #[br(map = read_bool_from::<u32>)]
         #[bw(map = write_bool_as::<u32>)]
         invisible: bool,

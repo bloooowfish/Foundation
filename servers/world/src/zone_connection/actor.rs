@@ -14,6 +14,7 @@ use kawari::{
 };
 
 impl ZoneConnection {
+    /// Sends an ActorMove for a given `actor_id`.
     pub async fn set_actor_position(
         &mut self,
         actor_id: ObjectId,
@@ -67,6 +68,7 @@ impl ZoneConnection {
         self.send_ipc_from(actor_id, ipc).await;
     }
 
+    /// Handles spawning an actor given their `actor_id` and `spawn` data.
     pub async fn spawn_actor(&mut self, actor_id: ObjectId, spawn: SpawnKind) {
         // There is no reason for us to spawn our own player again. It's probably a bug!
         assert!(actor_id != self.player_data.character.actor_id);
@@ -107,6 +109,7 @@ impl ZoneConnection {
         }
     }
 
+    /// Send the packet to delete `actor_id` at `spawn_index`.
     pub async fn delete_actor(&mut self, actor_id: ObjectId, spawn_index: u8) {
         let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::DeleteActor {
             spawn_index,
@@ -116,18 +119,21 @@ impl ZoneConnection {
         self.send_ipc_from(actor_id, ipc).await;
     }
 
+    /// Send the packet to delete object at `spawn_index`.
     pub async fn delete_object(&mut self, spawn_index: u8) {
         let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::DeleteObject { spawn_index });
 
         self.send_ipc_self(ipc).await;
     }
 
-    pub async fn toggle_invisibility(&mut self, invisible: bool) {
+    /// Sets our invisibility state to `invisible`.
+    pub async fn set_invisibility(&mut self, invisible: bool) {
         self.player_data.gm_invisible = invisible;
-        self.actor_control_self(ActorControlCategory::ToggleInvisibility { invisible })
+        self.actor_control_self(ActorControlCategory::SetInvisibility { invisible })
             .await;
     }
 
+    /// Sends an ActorControlSelf of `category`.
     pub async fn actor_control_self(&mut self, category: ActorControlCategory) {
         let ipc =
             ServerZoneIpcSegment::new(ServerZoneIpcData::ActorControlSelf(ActorControlSelf {
@@ -136,7 +142,9 @@ impl ZoneConnection {
         self.send_ipc_self(ipc).await;
     }
 
-    /// Broadcasts an actor control to everyone around you, including yourself. Useful for stuff like crafting.
+    /// Broadcasts an actor control to everyone around you, including yourself.
+    ///
+    /// Useful for stuff like crafting that is largely handled in ZoneConnection, and you need some basic surface-level replication.
     pub async fn broadcast_actor_control(&mut self, category: ActorControlCategory) {
         let ipc =
             ServerZoneIpcSegment::new(ServerZoneIpcData::ActorControlSelf(ActorControlSelf {
@@ -152,6 +160,7 @@ impl ZoneConnection {
             .await;
     }
 
+    /// Sends an ActorControl from `actor_id` of `category`.
     pub async fn actor_control(&mut self, actor_id: ObjectId, category: ActorControlCategory) {
         let ipc =
             ServerZoneIpcSegment::new(ServerZoneIpcData::ActorControl(ActorControl { category }));
@@ -159,6 +168,7 @@ impl ZoneConnection {
         self.send_ipc_from(actor_id, ipc).await;
     }
 
+    /// Sends an ActorControlTarget from `actor_id` of `category` towards `target`.
     pub async fn actor_control_target(
         &mut self,
         actor_id: ObjectId,
@@ -174,7 +184,7 @@ impl ZoneConnection {
         self.send_ipc_from(actor_id, ipc).await;
     }
 
-    /// Spawn the player actor. The client will handle replacing the existing one, if it exists.
+    /// Spawn the local player actor. The client will handle replacing the previous one, if applicable.
     pub async fn respawn_player(&mut self, start_invisible: bool) -> SpawnPlayer {
         let common = self.get_player_common_spawn(start_invisible);
 
@@ -201,6 +211,7 @@ impl ZoneConnection {
         spawn
     }
 
+    /// Returns the CommonSpawn of the local player.
     fn get_player_common_spawn(&self, start_invisible: bool) -> CommonSpawn {
         let inventory = &self.player_data.inventory;
 
@@ -253,11 +264,12 @@ impl ZoneConnection {
         }
     }
 
+    /// Send the current conditions list.
     pub async fn send_conditions(&mut self) {
         let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::Condition(self.conditions));
         self.send_ipc_self(ipc).await;
 
-        // Inform the server state as well
+        // Update the server state as well
         self.handle
             .send(ToServer::UpdateConditions(
                 self.player_data.character.actor_id,
@@ -266,6 +278,7 @@ impl ZoneConnection {
             .await;
     }
 
+    /// Spawns a new object.
     pub async fn spawn_object(&mut self, spawn: SpawnObject) {
         let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::SpawnObject(spawn));
 
@@ -294,6 +307,7 @@ impl ZoneConnection {
         .await;
     }
 
+    /// Spawns a new treasure.
     pub async fn spawn_treasure(&mut self, spawn: SpawnTreasure) {
         let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::SpawnTreasure(spawn.clone()));
 

@@ -3,7 +3,7 @@ command_sender = "[collect] "
 
 function onCommand(player, args, name)
     local amount = tonumber(args[1])
-    if player.gil >= amount then
+    if player.inventory.currency.gil.quantity >= amount then
         player:modify_currency(CURRENCY_GIL, -amount)
         printf(player, "Collected %s gil.", amount)
     else
