@@ -584,15 +584,6 @@ impl ZoneConnection {
         self.player_data.classjob.exp.0[index as usize]
     }
 
-    pub fn set_current_exp(&mut self, exp: i32) {
-        let game_data = self.game_data.lock();
-
-        let index = game_data
-            .get_exp_array_index(self.player_data.classjob.current_class as u16)
-            .expect("Failed to find EXP array index?!");
-        self.player_data.classjob.exp.0[index as usize] = exp;
-    }
-
     pub async fn update_hp_mp(&mut self, actor_id: ObjectId, hp: u32, mp: u16) {
         let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::UpdateHpMpTp { hp, mp, unk: 0 });
 

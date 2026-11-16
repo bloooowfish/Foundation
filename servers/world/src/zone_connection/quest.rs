@@ -29,16 +29,6 @@ impl ZoneConnection {
         self.send_ipc_self(ipc).await;
     }
 
-    pub async fn send_scenario_guide(&mut self) {
-        // TODO: temporary
-        let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::ScenarioGuide {
-            quest_id_1: 39,
-            next_quest_id: 85,
-            layout_id: 1985113,
-        });
-        self.send_ipc_self(ipc).await;
-    }
-
     pub async fn send_quest_information(&mut self) {
         self.send_active_quests().await;
 

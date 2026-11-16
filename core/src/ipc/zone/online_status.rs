@@ -174,11 +174,6 @@ impl OnlineStatusMask {
         self.flags[index as usize] |= value;
     }
 
-    pub fn remove_status(&mut self, status: OnlineStatus) {
-        let (value, index) = value_to_flag_byte_index_value(status as u32);
-        self.flags[index as usize] ^= value;
-    }
-
     pub fn has_status(&self, status: OnlineStatus) -> bool {
         let (value, index) = value_to_flag_byte_index_value(status as u32);
         self.flags[index as usize] & value == value

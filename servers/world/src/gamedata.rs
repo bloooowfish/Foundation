@@ -7,7 +7,7 @@ use icarus::Aetheryte::AetheryteSheet;
 use icarus::AetheryteSystemDefine::AetheryteSystemDefineSheet;
 use icarus::BNpcBase::BNpcBaseSheet;
 use icarus::BNpcCustomize::BNpcCustomizeSheet;
-use icarus::BaseParam::{BaseParamRow, BaseParamSheet};
+use icarus::BaseParam::BaseParamSheet;
 use icarus::Battalion::BattalionSheet;
 use icarus::ClassJob::ClassJobSheet;
 use icarus::ContentDirectorManagedSG::ContentDirectorManagedSGSheet;
@@ -60,7 +60,7 @@ use icarus::Tribe::TribeRow;
 use icarus::WarpLogic::WarpLogicSheet;
 use icarus::WeatherRate::WeatherRateSheet;
 use icarus::{Tribe::TribeSheet, Warp::WarpSheet};
-use kawari::ipc::zone::{CommonSpawn, DamageElement, PlotSize};
+use kawari::ipc::zone::{CommonSpawn, DamageElement};
 use physis::Language;
 use physis::equipment::EquipSlotCategory;
 use physis::race::{Gender, Race, Tribe};
@@ -610,78 +610,6 @@ impl GameData {
         Some(row.Name.to_string()) // This shouldn't use use SeString features
     }
 
-    /// Turn an equip slot category id into a slot for the equipped inventory
-    pub fn get_equipslot_category(&mut self, equipslot_id: u8) -> Option<u16> {
-        let row = self.equip_slot_category_sheet.row(equipslot_id as u32)?;
-
-        let main_hand = row.MainHand;
-        if main_hand == 1 {
-            return Some(0);
-        }
-
-        let off_hand = row.OffHand;
-        if off_hand == 1 {
-            return Some(1);
-        }
-
-        let head = row.Head;
-        if head == 1 {
-            return Some(2);
-        }
-
-        let body = row.Body;
-        if body == 1 {
-            return Some(3);
-        }
-
-        let gloves = row.Gloves;
-        if gloves == 1 {
-            return Some(4);
-        }
-
-        let legs = row.Legs;
-        if legs == 1 {
-            return Some(6);
-        }
-
-        let feet = row.Feet;
-        if feet == 1 {
-            return Some(7);
-        }
-
-        let ears = row.Ears;
-        if ears == 1 {
-            return Some(8);
-        }
-
-        let neck = row.Neck;
-        if neck == 1 {
-            return Some(9);
-        }
-
-        let wrists = row.Wrists;
-        if wrists == 1 {
-            return Some(10);
-        }
-
-        let right_finger = row.FingerR;
-        if right_finger == 1 {
-            return Some(11);
-        }
-
-        let left_finger = row.FingerL;
-        if left_finger == 1 {
-            return Some(12);
-        }
-
-        let soul_crystal = row.SoulCrystal;
-        if soul_crystal == 1 {
-            return Some(13);
-        }
-
-        None
-    }
-
     // Returns information on what item slots, if any, this equipslot configuration blocks.
     // For example, a two-handed weapon (MainHand = 1, OffHand = -1) will always block an off-hand from being equipped.
     fn get_equipslot_restrictions(&mut self, equipslot_id: u8) -> Option<ItemEquipRestrictions> {
@@ -771,13 +699,6 @@ impl GameData {
             .get(classjob_id as usize)
             .copied()
             .filter(|x| *x != -1)
-    }
-
-    /// Gets the job index for a given class.
-    pub fn get_job_index(&mut self, classjob_id: u16) -> Option<u8> {
-        let row = self.classjob_sheet.row(classjob_id as u32)?;
-
-        Some(row.JobIndex)
     }
 
     /// Gets the primary stat for a given class.
@@ -1219,11 +1140,6 @@ impl GameData {
         Some(row.StartingLevel)
     }
 
-    /// Returns information about the BaseParam.
-    pub fn get_base_param(&mut self, base_param_id: u16) -> Option<BaseParamRow> {
-        self.base_param_sheet.row(base_param_id as u32)
-    }
-
     /// Returns the ParamGrow for this level.
     pub fn get_param_grow(&mut self, level: u32) -> Option<ParamGrowRow> {
         self.param_grow_sheet.row(level)
@@ -1584,20 +1500,6 @@ impl GameData {
         let row = sheet.row(npc_yell_id)?;
 
         Some(row.Name)
-    }
-
-    /// Returns the TerritoryIntendedUse for a given zone.
-    pub fn get_intended_use(&mut self, zone_id: u32) -> Option<TerritoryIntendedUse> {
-        let row = self.territory_type_sheet.row(zone_id)?;
-        TerritoryIntendedUse::from_repr(row.TerritoryIntendedUse)
-    }
-
-    /// Returns the plot size for a given land set in a housing district.
-    pub fn get_land_set_size(&mut self, housing_id: u32, plot_index: usize) -> Option<PlotSize> {
-        let sheet = HousingLandSetSheet::read_from(&mut self.resource, Language::None).ok()?;
-        let row = sheet.row(housing_id)?;
-
-        PlotSize::from_repr(row.LandSet[plot_index].PlotSize)
     }
 
     /// Returns the land sets in a housing district.

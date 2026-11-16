@@ -99,16 +99,6 @@ impl SearchUIClassJobMask {
         let (value, index) = value_to_flag_byte_index_value(classjob as u32);
         self.flags[index as usize] |= value;
     }
-
-    pub fn remove_classjob(&mut self, classjob: u8) {
-        let (value, index) = value_to_flag_byte_index_value(classjob as u32);
-        self.flags[index as usize] ^= value;
-    }
-
-    pub fn has_classjob(&self, classjob: u8) -> bool {
-        let (value, index) = value_to_flag_byte_index_value(classjob as u32);
-        self.flags[index as usize] & value == value
-    }
 }
 
 impl std::fmt::Debug for SearchUIClassJobMask {
