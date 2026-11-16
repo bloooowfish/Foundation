@@ -28,8 +28,8 @@ use kawari::{
     common::{
         CharacterMode, DistanceRange, DropIn, DropInLayer, DropInObjectData, ENTRANCE_CIRCLE_IDS,
         EOBJ_EXIT, EOBJ_HOUSING_ENTRANCE, EOBJ_SHORTCUT, EOBJ_SHORTCUT_EXPLORER_MODE, EventState,
-        GimmickRectTriggerType, HandlerType, ObjectId, Position, TerritoryIntendedUse, WARP_DELAY,
-        WarpType, cylinder_test, euler_to_direction, internal_housing_row,
+        GimmickRectTriggerType, HandlerType, HouseId, ObjectId, Position, TerritoryIntendedUse,
+        WARP_DELAY, WarpType, cylinder_test, euler_to_direction, internal_housing_row,
     },
     config::get_config,
     ipc::zone::{
@@ -1597,6 +1597,32 @@ pub fn handle_zone_messages(
                 instance,
                 FromServer::PacketSegment(ipc, ObjectId::default()),
                 DestinationNetwork::ZoneClients,
+            );
+
+            true
+        }
+        ToServer::WarpHouse(from_id, from_actor_id, _house_id) => {
+            let mut data = data.lock();
+            let mut network = network.lock();
+            let mut game_data = game_data.lock();
+            let lua = lua.lock();
+
+            let zone_id = 1249; // TODO: placeholder
+
+            change_zone_warp_to_pop_range(
+                &mut data,
+                &mut network,
+                &mut game_data,
+                &lua,
+                Some(zone_id),
+                0,
+                *from_actor_id,
+                *from_id,
+                WarpType::Normal,
+                0,
+                Some(InstanceQuery::House {
+                    house_id: HouseId::default(),
+                }), // TODO: pass house id?
             );
 
             true

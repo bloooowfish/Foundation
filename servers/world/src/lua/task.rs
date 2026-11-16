@@ -231,4 +231,7 @@ pub enum LuaTask {
         pop_range_id: u32,
         ward: u16,
     },
+    WarpHouse {
+        house_id: u32,
+    },
 }

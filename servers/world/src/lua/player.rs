@@ -588,6 +588,10 @@ impl LuaPlayer {
             ward,
         });
     }
+
+    fn change_territory_house(&mut self, house_id: u32) {
+        self.queued_tasks.push(LuaTask::WarpHouse { house_id });
+    }
 }
 
 impl UserData for LuaPlayer {
@@ -1042,6 +1046,10 @@ impl UserData for LuaPlayer {
                 Ok(())
             },
         );
+        methods.add_method_mut("change_territory_house", |_, this, house_id: u32| {
+            this.change_territory_house(house_id);
+            Ok(())
+        });
     }
 
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {

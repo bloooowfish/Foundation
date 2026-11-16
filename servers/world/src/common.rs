@@ -516,6 +516,8 @@ pub enum ToServer {
     WarpHousingWard(ClientId, ObjectId, u16, u32, u16),
     /// Forcefully change the weather for this player's instance.
     ChangeWeather(ObjectId, u8),
+    /// Warp to a house.
+    WarpHouse(ClientId, ObjectId, u32),
 }
 
 #[derive(Clone, Debug)]

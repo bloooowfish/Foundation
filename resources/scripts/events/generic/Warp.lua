@@ -1,5 +1,4 @@
--- Generic handler for Warps
--- Use this for most warps that are just a yes/no option
+-- Generic handler for Warp NPCs
 
 local is_residental_menu = false
 
@@ -11,7 +10,7 @@ function onTalk(target, player)
         player:start_event(target_event_id, EVENT_TYPE_NEST, 0)
         player:play_scene(0, HIDE_HOTBAR | NO_DEFAULT_CAMERA, {})
 
-        is_residental_menu = true -- TODO: placeholder
+        is_residental_menu = true -- TODO: we need a way to detect the residental ferry skippers
     else
         player:play_scene(00000, HIDE_HOTBAR, {0})
     end
@@ -35,14 +34,11 @@ end
 
 function onNestedEventFinished(handler, results, player)
     if handler == HANDLER_TYPE_DEFAULT_TALK then
-        played_default_talk = true
-
         player:play_scene(00000, HIDE_HOTBAR, {})
-        return
     end
     if handler == HANDLER_TYPE_EXIT_RANGE and results[1] == 1 then
         -- ExitRange told us to warp out of the residental district
         player:warp(EVENT_ID)
+        player:finish_event()
     end
-    player:finish_event()
 end

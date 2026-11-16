@@ -76,3 +76,9 @@ function onReturn(scene, results, player)
 
     player:finish_event()
 end
+
+function onNestedEventFinished(handler, results, player)
+    if handler == HANDLER_TYPE_EXIT_RANGE then
+        player:finish_event()
+    end
+end
