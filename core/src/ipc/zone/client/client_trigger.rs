@@ -87,7 +87,7 @@ pub enum ClientTriggerCommand {
     TeleportQuery {
         aetheryte_id: u32,
         unk1: u32,
-        /// Used when teleporting to your Apartment
+        /// TODO: Determine if this is used for anything else than Apartment flag.
         unk2: u32,
         unk3: u32,
         unk4: u32,
