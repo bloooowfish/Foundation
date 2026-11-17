@@ -718,13 +718,14 @@ impl ZoneConnection {
                     resume_id,
                     params,
                 } => {
-                    self.resume_event(
-                        self.event_handler_id.unwrap().0,
-                        *scene,
-                        *resume_id,
-                        params.clone(),
-                    )
-                    .await;
+                    if let Some(event) = events.last() {
+                        self.resume_event(event.1.id.0, *scene, *resume_id, params.clone())
+                            .await;
+                    } else {
+                        tracing::warn!(
+                            "Something tried to call resume_event({scene}, {resume_id}, {params:?}) but there was no active event! This is a bug!"
+                        );
+                    }
                 }
                 LuaTask::WarpPopRange {
                     territory_id,

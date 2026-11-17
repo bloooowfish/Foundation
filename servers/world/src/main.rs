@@ -178,7 +178,6 @@ async fn initial_setup(
                     rejoining_party: false,
                     login_time: None,
                     glamour_information: None,
-                    event_handler_id: None,
                     recipe: None,
                     is_party_leader: false,
                     synced_level: None,

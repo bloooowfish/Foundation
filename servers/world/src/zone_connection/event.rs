@@ -72,12 +72,6 @@ impl ZoneConnection {
                 self.send_ipc_self(ipc).await;
             }
         }
-
-        if let Some(event) = events.last() {
-            self.event_handler_id = Some(event.1.id);
-        } else {
-            self.event_handler_id = None;
-        }
     }
 
     /// Starts a new event. This can be nested, depending on the event type you chose. Returns true if the event was successfully found and scripted, otherwise flase.
@@ -90,9 +84,6 @@ impl ZoneConnection {
         events: &mut Vec<(Box<dyn EventHandler>, Event)>,
         lua_player: &LuaPlayer,
     ) -> bool {
-        let old_event_handler_id = self.event_handler_id;
-        self.event_handler_id = Some(event_id);
-
         // tell the client the event has started
         {
             let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::EventStart(EventStart {
@@ -172,8 +163,6 @@ impl ZoneConnection {
                 "Event {event_id} tried to start, but it doesn't have a script associated with it!"
             ))
             .await;
-
-            self.event_handler_id = old_event_handler_id;
 
             // We have to send this again to ensure the client doesn't get stuck.
             self.send_conditions().await;

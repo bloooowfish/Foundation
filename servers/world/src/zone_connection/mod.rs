@@ -170,7 +170,6 @@ pub struct ZoneConnection {
     pub old_rotation: f32,
 
     /// Information about the current content.
-    pub event_handler_id: Option<HandlerId>, // TODO: replace with a helper function
     pub recipe: Option<Recipe>,
     pub synced_level: Option<u8>,
     /// Player Search results.
