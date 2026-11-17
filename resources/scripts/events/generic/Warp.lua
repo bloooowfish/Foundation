@@ -37,8 +37,10 @@ function onNestedEventFinished(handler, results, player)
         player:play_scene(00000, HIDE_HOTBAR, {})
     end
     if handler == HANDLER_TYPE_EXIT_RANGE and results[1] == 1 then
-        -- ExitRange told us to warp out of the residental district
-        player:warp(EVENT_ID)
+        if results[2] == -1 then
+            -- ExitRange told us to warp out of the residental district
+            player:warp(EVENT_ID)
+        end
         player:finish_event()
     end
 end

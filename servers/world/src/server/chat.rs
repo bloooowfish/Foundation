@@ -228,6 +228,7 @@ fn process_debug_commands(
             let mut data = data.lock();
             if let Some((_, id)) = chat_message.split_once(' ') {
                 let shortcut_poprange_id;
+                let zone_id;
                 {
                     let Some(instance) = data.find_actor_instance(from_actor_id) else {
                         return true;
@@ -237,6 +238,7 @@ fn process_debug_commands(
                         return true;
                     };
 
+                    zone_id = instance.zone.id;
                     shortcut_poprange_id =
                         director.get_debug_shortcut(id.parse().unwrap_or_default());
                 }
@@ -250,7 +252,7 @@ fn process_debug_commands(
                     &mut network,
                     &mut game_data,
                     &lua,
-                    None,
+                    zone_id,
                     shortcut_poprange_id,
                     from_actor_id,
                     from_id,

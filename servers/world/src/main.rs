@@ -41,7 +41,7 @@ use kawari::packet::{ConnectionState, ConnectionType, SegmentData, parse_packet_
 use kawari_world::lua::{KawariLua, KawariLuaState, LuaPlayer};
 use kawari_world::{
     ChatConnection, CustomIpcConnection, Event, EventHandler, GameData, ObsfucationData, Roulette,
-    TeleportReason, ZoneConnection,
+    ZoneConnection,
 };
 use kawari_world::{
     ChatConnectionChannels, ChatPlayerData, ClientHandle, ClientId, FromServer, MessageInfo,
@@ -172,7 +172,6 @@ async fn initial_setup(
                     old_zone_id: 0,
                     old_position: Position::default(),
                     old_rotation: 0.0,
-                    teleport_reason: TeleportReason::NotSpecified,
                     active_minion: 0,
                     party_id: 0,
                     rejoining_party: false,
@@ -198,9 +197,7 @@ async fn initial_setup(
                     initial_login: true,
                     fate_motivation_npcs: HashMap::new(),
                     content_handler_id: None,
-                    can_share_teleport: false,
                     entering_subdivision: false,
-                    ward_number: 0xff,
                 };
 
                 // Handle setup before passing off control to the zone connection.
@@ -1042,12 +1039,8 @@ async fn process_packet(
                                         .send(ToServer::ZoneIn(
                                             connection.id,
                                             connection.player_data.character.actor_id,
-                                            connection.teleport_reason == TeleportReason::Aetheryte,
                                         ))
                                         .await;
-
-                                    // Reset so it doesn't get stuck to Aetheryte:
-                                    connection.teleport_reason = TeleportReason::NotSpecified;
                                 }
                                 ClientTriggerCommand::BeginContentsReplay => {
                                     connection.conditions.set_condition(
@@ -1810,13 +1803,13 @@ async fn process_packet(
                                 }
                                 ClientTriggerCommand::TeleportOfferReply { decline_teleport } => {
                                     if !decline_teleport
-                                        && let Some(offered_teleport) = &connection.offered_teleport
+                                        && let Some(offered_teleport) =
+                                            &connection.offered_teleport.take()
                                     {
                                         connection
                                             .warp_aetheryte(
                                                 offered_teleport.aetheryte_id as u32,
-                                                false,
-                                                true,
+                                                &lua_player.zone_data,
                                             )
                                             .await;
                                     } else {
@@ -4079,27 +4072,9 @@ async fn process_server_msg(
                 connection.conditions = conditions;
                 connection.send_conditions().await;
             }
-            FromServer::ChangeZone(
-                zone_id,
-                content_finder_condition_id,
-                weather_id,
-                position,
-                rotation,
-                lua_zone,
-                handler_id,
-                query,
-            ) => {
+            FromServer::ChangeZone(position, rotation, lua_zone, handler_id) => {
                 connection
-                    .handle_zone_change(
-                        zone_id,
-                        content_finder_condition_id,
-                        weather_id,
-                        position,
-                        rotation,
-                        &lua_zone,
-                        handler_id,
-                        query,
-                    )
+                    .handle_zone_change(position, rotation, &lua_zone, handler_id)
                     .await;
                 lua_player.zone_data = lua_zone;
             }
@@ -4549,9 +4524,6 @@ async fn process_server_msg(
             }
             FromServer::FATEComplete => {
                 connection.record_fate_completion();
-            }
-            FromServer::CheckTeleportSharingEligibility(aetheryte_id) => {
-                connection.check_tele_sharing_eligibility(aetheryte_id);
             }
             FromServer::SetCharacterMode(mode, arg) => {
                 connection.set_character_mode(mode, arg, false).await;

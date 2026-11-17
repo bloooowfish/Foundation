@@ -127,12 +127,8 @@ impl ZoneConnection {
                         self.send_inventory().await;
                     }
                 }
-                LuaTask::WarpAetheryte {
-                    aetheryte_id,
-                    housing_aethernet,
-                } => {
-                    self.warp_aetheryte(*aetheryte_id, *housing_aethernet, false)
-                        .await;
+                LuaTask::WarpAetheryte { aetheryte_id } => {
+                    self.warp_aetheryte(*aetheryte_id, &player.zone_data).await;
                 }
                 LuaTask::ToggleInvisibility { invisible } => {
                     self.set_invisibility(*invisible).await;
@@ -634,8 +630,11 @@ impl ZoneConnection {
                     .await;
                 }
                 LuaTask::ReturnToHomepoint => {
-                    self.warp_aetheryte(self.player_data.aetheryte.homepoint as u32, false, false)
-                        .await;
+                    self.warp_aetheryte(
+                        self.player_data.aetheryte.homepoint as u32,
+                        &player.zone_data,
+                    )
+                    .await;
                 }
                 LuaTask::JoinContent { id } => {
                     self.join_content(*id as u16, DutyFinderSetting::default())

@@ -819,6 +819,7 @@ pub fn director_tick(
                     *actor_id,
                     Duration::from_secs(0),
                     QueuedTaskData::WarpToPopRange {
+                        zone_id: instance.zone.id,
                         id: instance
                             .directors
                             .first()

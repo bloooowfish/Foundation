@@ -37,8 +37,8 @@ function onYield(scene, id, results, player)
             return
         elseif pop_range_id ~= nil then
             -- go to ward
+            player:finish_event()
             player:change_territory_housing_ward(territory_id, pop_range_id, ward)
         end
     end
-    player:finish_event()
 end

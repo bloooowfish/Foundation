@@ -1,8 +1,8 @@
 //! All things zone related, such as changing the weather or warping.
 
 use crate::{
-    InstanceQuery, ObsfucationData, TeleportReason, ToServer, ZoneConnection,
-    inventory::BuyBackList, lua::LuaZone, zone_connection::TeleportQuery,
+    InstanceQuery, ObsfucationData, ToServer, ZoneConnection, inventory::BuyBackList, lua::LuaZone,
+    zone_connection::TeleportQuery,
 };
 use kawari::{
     common::{
@@ -29,7 +29,6 @@ impl ZoneConnection {
         warp_type: WarpType,
         loading_screen_vfx_id: u16,
     ) {
-        self.teleport_reason = TeleportReason::NotSpecified;
         self.handle
             .send(ToServer::ChangeZone(
                 self.id,
@@ -46,14 +45,10 @@ impl ZoneConnection {
     /// Completes the zone change.
     pub async fn handle_zone_change(
         &mut self,
-        new_zone_id: u16,
-        content_finder_condition_id: u16,
-        weather_id: u8,
         exit_position: Position,
         exit_rotation: f32,
         lua_zone: &LuaZone,
         handler_id: Option<HandlerId>,
-        query: InstanceQuery,
     ) {
         // Reset data
         self.spawned_in = false;
@@ -62,11 +57,11 @@ impl ZoneConnection {
         self.player_data.buyback_list = BuyBackList::default();
         self.synced_level = None;
 
-        let bound_by_duty = content_finder_condition_id != 0;
+        let bound_by_duty = matches!(lua_zone.query, InstanceQuery::InstancedContent { .. });
 
         // Commit back our zone id and other volatile info on zone change.
         {
-            self.player_data.volatile.zone_id = new_zone_id as i32;
+            self.player_data.volatile.zone_id = lua_zone.zone_id as i32;
             self.player_data.volatile.position = exit_position;
             self.player_data.volatile.rotation = exit_rotation as f64;
 
@@ -192,7 +187,11 @@ impl ZoneConnection {
         let mut game_festival_phases = [0; 8];
 
         // Set up ocean fishing
-        if bound_by_duty {
+        if let InstanceQuery::InstancedContent {
+            content_finder_condition_id,
+            ..
+        } = lua_zone.query
+        {
             let mut game_data = self.game_data.lock();
             if let Some(spots) =
                 game_data.lookup_ikd_route_spots_via_content(content_finder_condition_id as u32)
@@ -232,22 +231,34 @@ impl ZoneConnection {
                 ZoneInitFlags::default()
             };
 
-            if !bound_by_duty {
-                flags |= ZoneInitFlags::ENABLE_FLYING;
-            } else {
+            if let InstanceQuery::InstancedContent {
+                content_finder_condition_id,
+                ..
+            } = lua_zone.query
+            {
                 self.offered_teleport = None; // Discard any previously offered teleports once we're in a duty.
 
                 let mut game_data = self.game_data.lock();
                 if game_data.is_duty_recorder_allowed(content_finder_condition_id) {
                     flags |= ZoneInitFlags::ENABLE_RECORD_READY_CHECK;
                 }
+            } else {
+                flags |= ZoneInitFlags::ENABLE_FLYING;
             }
 
             let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::ZoneInit(ZoneInit {
-                territory_type: new_zone_id,
-                weather_id,
+                territory_type: lua_zone.zone_id,
+                weather_id: lua_zone.weather_id,
                 flags,
-                content_finder_condition_id,
+                content_finder_condition_id: if let InstanceQuery::InstancedContent {
+                    content_finder_condition_id,
+                    ..
+                } = lua_zone.query
+                {
+                    content_finder_condition_id
+                } else {
+                    0
+                },
                 game_festival_ids,
                 game_festival_phases,
                 ui_festival_ids: self.config.active_festivals.map(FestivalId),
@@ -288,13 +299,13 @@ impl ZoneConnection {
         }
 
         if lua_zone.intended_use == TerritoryIntendedUse::HousingOutdoor
-            && let InstanceQuery::Ward { ward } = query
+            && let InstanceQuery::Ward { ward } = lua_zone.query
         {
-            self.populate_ward(new_zone_id, Some(ward as u8)).await;
+            self.populate_ward(lua_zone.zone_id, ward).await;
         }
 
         if lua_zone.intended_use == TerritoryIntendedUse::HousingIndoor
-            && let InstanceQuery::House { house_id } = query
+            && let InstanceQuery::House { house_id } = lua_zone.query
         {
             // TODO: Reject doing anything if we entered an apartment lobby and somehow enter this code; those never have furniture and should be TerritoryIntendedUse::HousingIndoor too
             let interior_details;
@@ -352,11 +363,7 @@ impl ZoneConnection {
         self.initial_login = false;
     }
 
-    pub async fn populate_ward(&mut self, zone_id: u16, ward_id: Option<u8>) {
-        if let Some(ward_id) = ward_id {
-            self.ward_number = ward_id;
-        }
-
+    pub async fn populate_ward(&mut self, zone_id: u16, ward_id: u16) {
         // First, send some house info!
         let mut houses = [House::default(); 30];
         let mut division_map_markers = [WardMapInfo::default(); 30];
@@ -373,13 +380,10 @@ impl ZoneConnection {
         {
             let mut database = self.database.lock();
             let mut gamedata = self.game_data.lock();
-            let all_houses = database.find_houses_in_ward(&mut gamedata, zone_id, self.ward_number);
+            let all_houses = database.find_houses_in_ward(&mut gamedata, zone_id, ward_id);
             // TODO: Furniture is always empty for now, see database/housing.rs
-            furniture = database.find_furniture_in_ward(
-                zone_id,
-                self.ward_number,
-                self.entering_subdivision,
-            );
+            furniture =
+                database.find_furniture_in_ward(zone_id, ward_id, self.entering_subdivision);
 
             // First get the ranges of the division we're entering, and the opposite division we're NOT entering.
             // `database.find_houses_in_ward` returns all 60 plots in order, so we can safely divide it up in halves.
@@ -426,7 +430,7 @@ impl ZoneConnection {
         self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::HouseList(
             HouseList {
                 land_id: land_id as u16,
-                ward: self.ward_number as u16,
+                ward: ward_id,
                 territory_type_id: zone_id,
                 world_id: self.config.world_id,
                 division_info,
@@ -470,7 +474,6 @@ impl ZoneConnection {
 
     /// Request to teleport the player to the given `warp_id`, which is an index in the Warp Excel sheet.
     pub async fn warp(&mut self, warp_id: u32) {
-        self.teleport_reason = TeleportReason::NotSpecified;
         self.handle
             .send(ToServer::Warp(
                 self.id,
@@ -480,25 +483,26 @@ impl ZoneConnection {
             .await;
     }
 
-    /// Request to teleport the player to the given `aetheryte_id`, which is an index in the Aetheryte Excel sheet.
-    pub async fn warp_aetheryte(
-        &mut self,
-        aetheryte_id: u32,
-        housing_aethernet: bool,
-        taking_offered_teleport: bool,
-    ) {
-        self.teleport_reason = TeleportReason::Aetheryte;
+    /// Request to teleport the player to the given `aetheryte_id`, which is an index in the Aetheryte or HousingAethernet Excel sheet.
+    pub async fn warp_aetheryte(&mut self, aetheryte_id: u32, zone: &LuaZone) {
+        let (destination_instance_id, destination_zone_id);
+        {
+            let mut game_data = self.game_data.lock();
+            (destination_instance_id, destination_zone_id) = game_data
+                .get_aetheryte(aetheryte_id)
+                .expect("Failed to find the aetheryte!");
+        }
 
         self.handle
-            .send(ToServer::WarpAetheryte(
+            .send(ToServer::WarpPopRange(
                 self.id,
                 self.player_data.character.actor_id,
-                aetheryte_id,
-                housing_aethernet,
+                destination_zone_id,
+                destination_instance_id,
             ))
             .await;
 
-        if self.can_offer_teleport() {
+        if self.can_offer_teleport(aetheryte_id) {
             let teleport_info = TeleportQuery {
                 aetheryte_id: aetheryte_id as u16,
                 // TODO: Verify if this does get sent at all to other players
@@ -513,25 +517,19 @@ impl ZoneConnection {
                     teleport_info,
                 ))
                 .await;
-            // Reset it so we don't inadvertently share an invalid aetheryte (housing/city aethernet shard)
-            self.can_share_teleport = false;
-        }
-
-        if taking_offered_teleport {
-            self.offered_teleport = None;
         }
 
         self.entering_subdivision = false;
 
         // If we're using the housing aethernet, we need to inform the client about the division they're going to.
-        if housing_aethernet {
+        if let InstanceQuery::Ward { ward } = zone.query {
             {
                 let mut gamedata = self.game_data.lock();
                 if gamedata.is_subdivision_aetheryte(aetheryte_id) {
                     self.entering_subdivision = true;
                 }
             }
-            self.populate_ward(self.player_data.volatile.zone_id as u16, None)
+            self.populate_ward(self.player_data.volatile.zone_id as u16, ward)
                 .await;
         }
     }

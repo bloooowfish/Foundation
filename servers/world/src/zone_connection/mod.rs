@@ -62,14 +62,6 @@ pub struct TeleportQuery {
     pub unk_flags: u32,
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub enum TeleportReason {
-    #[default]
-    NotSpecified,
-    /// Teleporting/Returning to an Aetheryte or shared
-    Aetheryte,
-}
-
 /// Quest information stored in the database.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PersistentQuest {
@@ -137,7 +129,6 @@ pub struct ZoneConnection {
     pub lua: Arc<Mutex<KawariLua>>,
     pub game_data: Arc<Mutex<GameData>>,
 
-    pub teleport_reason: TeleportReason,
     pub active_minion: u32,
     /// The player's party id number, used for networking party-related events
     pub party_id: u64,
@@ -206,12 +197,8 @@ pub struct ZoneConnection {
     pub fate_motivation_npcs: HashMap<ObjectId, u16>,
     /// Used only for the local player's PlayerSpawn.
     pub content_handler_id: Option<HandlerId>,
-    /// Whether the player can offer this teleport to their party.
-    pub can_share_teleport: bool, // TODO: remove this and add more teleport reasons
     /// Whether the player is teleporting to an aetheryte in a housing subdivision.
     pub entering_subdivision: bool,
-    /// Temorary variable storing which ward the client is currently in during housing aethernet travel.
-    pub ward_number: u8, // TODO: This should probably be a field in Volatile instead?
 }
 
 impl ZoneConnection {
@@ -517,13 +504,9 @@ impl ZoneConnection {
         }
     }
 
-    pub fn check_tele_sharing_eligibility(&mut self, aetheryte_id: u32) {
+    pub fn can_offer_teleport(&mut self, aetheryte_id: u32) -> bool {
         let mut game_data = self.game_data.lock();
         // The teleport can only be offered if it's a town aetheryte (not shard) and the player is actually teleporting, not using the aethernet.
-        self.can_share_teleport = game_data.is_aetheryte(aetheryte_id);
-    }
-
-    pub fn can_offer_teleport(&self) -> bool {
-        self.party_id != 0 && self.can_share_teleport
+        self.party_id != 0 && game_data.is_aetheryte(aetheryte_id)
     }
 }

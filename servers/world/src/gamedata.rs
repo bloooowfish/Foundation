@@ -555,14 +555,11 @@ impl GameData {
         warp_logic_row.WarpName.to_string() // This shouldn't use SeString features
     }
 
-    pub fn get_aetheryte(
-        &mut self,
-        aetheryte_id: u32,
-        housing_aethernet: bool,
-    ) -> Option<(u32, u16)> {
+    /// Returns the pop range and zone id from the Aetheryte or HousingAethernet sheet, whichever is applicable.
+    pub fn get_aetheryte(&mut self, aetheryte_id: u32) -> Option<(u32, u16)> {
         let config = get_config();
 
-        if !housing_aethernet {
+        if aetheryte_id < HousingAethernetSheet::STARTING_ROW {
             let sheet =
                 AetheryteSheet::read_from(&mut self.resource, config.world.language()).ok()?;
             let row = sheet.row(aetheryte_id)?;

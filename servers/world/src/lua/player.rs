@@ -162,11 +162,9 @@ impl LuaPlayer {
             .push(LuaTask::UnlockClassJob { classjob_id });
     }
 
-    fn warp_aetheryte(&mut self, aetheryte_id: u32, housing_aethernet: bool) {
-        self.queued_tasks.push(LuaTask::WarpAetheryte {
-            aetheryte_id,
-            housing_aethernet,
-        });
+    fn warp_aetheryte(&mut self, aetheryte_id: u32) {
+        self.queued_tasks
+            .push(LuaTask::WarpAetheryte { aetheryte_id });
     }
 
     fn toggle_invisiblity(&mut self) {
@@ -694,13 +692,10 @@ impl UserData for LuaPlayer {
             this.unlock_classjob(classjob_id);
             Ok(())
         });
-        methods.add_method_mut(
-            "warp_aetheryte",
-            |_, this, (aetheryte_id, housing_aethernet): (u32, bool)| {
-                this.warp_aetheryte(aetheryte_id, housing_aethernet);
-                Ok(())
-            },
-        );
+        methods.add_method_mut("warp_aetheryte", |_, this, aetheryte_id: u32| {
+            this.warp_aetheryte(aetheryte_id);
+            Ok(())
+        });
         methods.add_method_mut("set_level", |_, this, level: u16| {
             this.set_level(level);
             Ok(())

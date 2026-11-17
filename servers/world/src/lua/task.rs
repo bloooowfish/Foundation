@@ -29,7 +29,6 @@ pub enum LuaTask {
     },
     WarpAetheryte {
         aetheryte_id: u32,
-        housing_aethernet: bool,
     },
     ToggleInvisibility {
         invisible: bool,

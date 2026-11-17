@@ -11,7 +11,7 @@ function onReturn(scene, results, player)
     -- If the player cancelled without warping, no results are sent.
     if #results == 1 then
         player:finish_event() -- Need to finish the event here, because warping does not return to this callback (the game will crash or softlock otherwise)
-        player:warp_aetheryte(results[1], true)
+        player:warp_aetheryte(results[1])
         return
     end
     player:finish_event()

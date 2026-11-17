@@ -10,7 +10,7 @@ use diesel::sql_types::Text;
 use diesel::sqlite::Sqlite;
 use kawari::constants::{CLASSJOB_ARRAY_SIZE, SHARED_FATES_SIZE};
 use serde_derive::{Deserialize, Serialize};
-pub use zone_connection::{ObsfucationData, PlayerData, TeleportReason, ZoneConnection};
+pub use zone_connection::{ObsfucationData, PlayerData, ZoneConnection};
 
 mod database;
 pub use database::{Content, Unlock, WorldDatabase};

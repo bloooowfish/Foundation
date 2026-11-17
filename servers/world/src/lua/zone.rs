@@ -8,11 +8,16 @@ use kawari::{
     packet::PacketSegment,
 };
 
+use crate::InstanceQuery;
+
 use super::QueueSegments;
 
+/// A strange concentration of Instance and Zone data, this is given by the server state.
 #[derive(Debug, Default, Clone)]
 pub struct LuaZone {
     pub zone_id: u16,
+    pub query: InstanceQuery,
+    // TODO: this is not updated when changed by the server state!
     pub weather_id: u8,
     pub internal_name: String,
     pub region_name: String,
@@ -34,6 +39,13 @@ impl UserData for LuaZone {
         fields.add_field_method_get("region_name", |_, this| Ok(this.region_name.clone()));
         fields.add_field_method_get("place_name", |_, this| Ok(this.place_name.clone()));
         fields.add_field_method_get("intended_use", |_, this| Ok(this.intended_use));
+        fields.add_field_method_get("ward", |_, this| {
+            if let InstanceQuery::Ward { ward } = this.query {
+                Ok(mlua::Value::Integer(ward as i64))
+            } else {
+                Ok(mlua::Value::Nil)
+            }
+        });
     }
 }
 

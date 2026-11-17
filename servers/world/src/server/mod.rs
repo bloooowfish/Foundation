@@ -374,7 +374,11 @@ fn server_logic_tick(
                                     }
                                 }
                                 MapGimmick::FakeExit { exit_pop_range_id } => {
-                                    actors_to_fake_zone_jump.push((*id, *exit_pop_range_id));
+                                    actors_to_fake_zone_jump.push((
+                                        *id,
+                                        instance.zone.id,
+                                        *exit_pop_range_id,
+                                    ));
                                 }
                             }
                         }
@@ -743,7 +747,7 @@ fn server_logic_tick(
         update_actor_hp_mp(network.clone(), instance, id);
     }
 
-    for (id, exit_pop_range_id) in actors_to_fake_zone_jump {
+    for (id, zone_id, exit_pop_range_id) in actors_to_fake_zone_jump {
         let mut game_data = game_data.lock();
         let mut data = data.lock();
         let mut network = network.lock();
@@ -754,7 +758,7 @@ fn server_logic_tick(
             &mut network,
             &mut game_data,
             &lua,
-            None, // None here means that we don't want to change their current instance
+            zone_id,
             exit_pop_range_id,
             id,
             from_id,
@@ -939,7 +943,7 @@ pub async fn server_main_loop(
                                     DestinationNetwork::ZoneClients,
                                 );
                             }
-                            QueuedTaskData::WarpToPopRange { id } => {
+                            QueuedTaskData::WarpToPopRange { zone_id, id } => {
                                 let mut data = data.lock();
                                 let mut network = network.lock();
                                 let mut game_data = game_data.lock();
@@ -952,7 +956,7 @@ pub async fn server_main_loop(
                                     &mut network,
                                     &mut game_data,
                                     &lua,
-                                    None, // Means we don't want to change their current instance
+                                    *zone_id,
                                     *id,
                                     task.from_actor_id,
                                     from_id,
@@ -1197,14 +1201,12 @@ pub async fn server_main_loop(
 
                     // tell the client to load into the zone
                     let msg = FromServer::ChangeZone(
-                        instance.zone.id,
-                        instance.content_finder_condition_id(),
-                        instance.weather_id,
                         exit_position,
                         exit_rotation,
-                        instance.zone.to_lua_zone(instance.weather_id),
+                        instance
+                            .zone
+                            .to_lua_zone(instance.weather_id, instance.query),
                         instance.content_handler_id(),
-                        instance.query,
                     );
 
                     network.send_to(from_id, msg, DestinationNetwork::ZoneClients);
@@ -1284,9 +1286,6 @@ pub async fn server_main_loop(
 
                             {
                                 let mut network = network.lock();
-                                network.send_to(from_id, msg, DestinationNetwork::ZoneClients);
-                                let msg =
-                                    FromServer::CheckTeleportSharingEligibility(*aetheryte_id);
                                 network.send_to(from_id, msg, DestinationNetwork::ZoneClients);
                             }
 
@@ -2312,14 +2311,12 @@ pub async fn server_main_loop(
                     instance.insert_empty_actor(from_actor_id);
 
                     let msg = FromServer::ChangeZone(
-                        instance.zone.id,
-                        instance.content_finder_condition_id(),
-                        instance.weather_id,
                         old_position,
                         old_rotation,
-                        instance.zone.to_lua_zone(instance.weather_id),
+                        instance
+                            .zone
+                            .to_lua_zone(instance.weather_id, instance.query),
                         instance.content_handler_id(),
-                        instance.query,
                     );
                     network.send_to(from_client_id, msg, DestinationNetwork::ZoneClients);
                 }

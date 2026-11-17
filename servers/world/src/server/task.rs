@@ -38,7 +38,7 @@ pub enum QueuedTaskData {
     /// Generically send a packet segment, only used for `do_change_zone`. Don't abuse this as a generic task, you almost certainly want to create a new variant.
     PacketSegment { segment: ServerZoneIpcSegment },
     /// Used by directors since its tough to fit this into the director logic.
-    WarpToPopRange { id: u32 },
+    WarpToPopRange { zone_id: u16, id: u32 },
     /// Reset a player's action combo status.
     ResetCombo,
     /// Respawn a new mob.

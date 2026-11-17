@@ -683,16 +683,6 @@ impl Instance {
             .copied()
     }
 
-    pub fn content_finder_condition_id(&self) -> u16 {
-        match self.query {
-            InstanceQuery::InstancedContent {
-                content_finder_condition_id,
-                ..
-            } => content_finder_condition_id,
-            _ => 0,
-        }
-    }
-
     pub fn content_settings(&self) -> DutyFinderSetting {
         match self.query {
             InstanceQuery::InstancedContent {

@@ -476,7 +476,7 @@ impl Zone {
         None
     }
 
-    pub fn to_lua_zone(&self, weather_id: u8) -> LuaZone {
+    pub fn to_lua_zone(&self, weather_id: u8, query: InstanceQuery) -> LuaZone {
         LuaZone {
             zone_id: self.id,
             weather_id,
@@ -488,6 +488,7 @@ impl Zone {
             cached_npc_base_ids: self.cached_npc_base_ids.clone(),
             cached_eobj_base_ids: self.cached_eobj_base_ids.clone(),
             cached_pop_ranges: self.cached_pop_ranges.clone(),
+            query,
             ..Default::default()
         }
     }
@@ -828,86 +829,79 @@ fn begin_change_zone<'a>(
     network: &mut NetworkState,
     game_data: &mut GameData,
     lua: &KawariLua,
-    destination_zone_id: Option<u16>,
+    territory_type_id: u16,
     actor_id: ObjectId,
     warp_type: WarpType,
     loading_screen_vfx_id: u16,
     query: Option<InstanceQuery>,
 ) -> (&'a mut Instance, bool) {
-    if let Some(destination_zone_id) = destination_zone_id {
-        let mut needs_init_zone = false;
-        let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::PrepareZoning(PrepareZoning {
-            territory_type_id: destination_zone_id,
-            warp_type,
-            log_message: 0,
-            vfx_id: 0,
-            loading_screen_vfx_id,
-            hide_character: 0,
-            fade_out_delay: 1,
-            flags: PrepareZoningFlag::default(),
-        }));
+    let mut needs_init_zone = false;
+    let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::PrepareZoning(PrepareZoning {
+        territory_type_id,
+        warp_type,
+        log_message: 0,
+        vfx_id: 0,
+        loading_screen_vfx_id,
+        hide_character: 0,
+        fade_out_delay: 1,
+        flags: PrepareZoningFlag::default(),
+    }));
 
-        network.send_to_by_actor_id(
-            actor_id,
-            FromServer::PacketSegment(ipc, actor_id),
-            DestinationNetwork::ZoneClients,
-        );
+    network.send_to_by_actor_id(
+        actor_id,
+        FromServer::PacketSegment(ipc, actor_id),
+        DestinationNetwork::ZoneClients,
+    );
 
-        // inform the players in this zone that this actor left
-        if let Some(current_instance) = data.find_actor_instance_mut(actor_id) {
-            // HACK: This is to prevent actors from disappearing when warping within the same zone.
-            if current_instance.zone.id != destination_zone_id {
-                needs_init_zone = true;
-            }
+    if let Some(current_instance) = data.find_actor_instance_mut(actor_id) {
+        // This is to prevent actors from disappearing when warping within the same zone.
+        if current_instance.zone.id != territory_type_id {
+            needs_init_zone = true;
         }
+    } else {
+        needs_init_zone = true;
+    }
 
-        if needs_init_zone {
-            remove_actor_from_instance(data, network, actor_id);
-        }
+    // The ward is only populated when ToServer::ChangeZone is sent, and is generally needed for all housing I guess
+    if matches!(query, Some(InstanceQuery::House { .. }))
+        || matches!(query, Some(InstanceQuery::Ward { .. }))
+    {
+        needs_init_zone = true;
+    }
 
-        // TODO: use these
-        let mut position = Default::default();
-        let mut rotation = Default::default();
+    if needs_init_zone {
+        remove_actor_from_instance(data, network, actor_id);
+    }
 
-        // then find or create a new instance with the zone id
-        let instance = if let Some(query) = query {
-            data.ensure_exists_query(game_data, lua, destination_zone_id, query)
+    // TODO: use these
+    let mut position = Default::default();
+    let mut rotation = Default::default();
+
+    // Only call ensure_exists if we actually need to create a zone, otherwise it could throw away housing information
+    let instance = if needs_init_zone {
+        if let Some(query) = query {
+            data.ensure_exists_query(game_data, lua, territory_type_id, query)
         } else {
             data.ensure_exists(
                 network,
                 game_data,
                 lua,
                 actor_id,
-                destination_zone_id,
+                territory_type_id,
                 &mut position,
                 &mut rotation,
             )
-        };
+        }
+    } else {
+        data.find_actor_instance_mut(actor_id).unwrap()
+    };
+
+    if needs_init_zone {
         // Insert an empty actor that will be filled later
         instance.insert_empty_actor(actor_id);
-
-        (instance, needs_init_zone)
-    } else {
-        let instance = data.find_actor_instance_mut(actor_id).unwrap();
-        let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::PrepareZoning(PrepareZoning {
-            territory_type_id: instance.zone.id,
-            warp_type,
-            log_message: 0,
-            vfx_id: 0,
-            loading_screen_vfx_id,
-            hide_character: 0,
-            fade_out_delay: 1,
-            flags: PrepareZoningFlag::default(),
-        }));
-
-        network.send_to_by_actor_id(
-            actor_id,
-            FromServer::PacketSegment(ipc, actor_id),
-            DestinationNetwork::ZoneClients,
-        );
-
-        (instance, false)
     }
+
+    (instance, needs_init_zone)
 }
 
 /// Finds a random position from the pop range. Most have several positions available to stop people from spawning in the same place.
@@ -929,7 +923,7 @@ pub fn change_zone_warp_to_pop_range(
     network: &mut NetworkState,
     game_data: &mut GameData,
     lua: &KawariLua,
-    destination_zone_id: Option<u16>,
+    destination_zone_id: u16,
     destination_instance_id: u32,
     actor_id: ObjectId,
     from_id: ClientId,
@@ -1065,7 +1059,7 @@ pub fn change_zone_to_player(
         network,
         game_data,
         lua,
-        Some(destination_zone_id),
+        destination_zone_id,
         from_actor_id,
         WarpType::Normal,
         0,
@@ -1107,14 +1101,12 @@ fn do_change_zone(
 
         // now that we have all of the data needed, inform the connection of where they need to be
         let msg = FromServer::ChangeZone(
-            target_instance.zone.id,
-            target_instance.content_finder_condition_id(),
-            target_instance.weather_id,
             exit_position.unwrap_or_default(),
             exit_rotation.unwrap_or_default(),
-            target_instance.zone.to_lua_zone(target_instance.weather_id),
+            target_instance
+                .zone
+                .to_lua_zone(target_instance.weather_id, target_instance.query),
             target_instance.content_handler_id(),
-            target_instance.query,
         );
         network.send_to(from_id, msg, DestinationNetwork::ZoneClients);
     } else {
@@ -1193,7 +1185,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 &lua,
-                Some(*zone_id),
+                *zone_id,
                 *actor_id,
                 *warp_type,
                 *loading_screen_vfx_id,
@@ -1253,7 +1245,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 &lua,
-                Some(destination_zone_id),
+                destination_zone_id,
                 destination_instance_id,
                 *actor_id,
                 *from_id,
@@ -1280,38 +1272,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 &lua,
-                Some(destination_zone_id),
-                destination_instance_id,
-                *actor_id,
-                *from_id,
-                WarpType::Normal,
-                0,
-                None,
-            );
-
-            true
-        }
-        ToServer::WarpAetheryte(from_id, actor_id, aetheryte_id, housing_aethernet) => {
-            let mut data = data.lock();
-            let mut network = network.lock();
-            let mut game_data = game_data.lock();
-            let lua = lua.lock();
-
-            // first, find the warp and it's destination
-            let (destination_instance_id, destination_zone_id) = game_data
-                .get_aetheryte(*aetheryte_id, *housing_aethernet)
-                .expect("Failed to find the aetheryte!");
-
-            change_zone_warp_to_pop_range(
-                &mut data,
-                &mut network,
-                &mut game_data,
-                &lua,
-                if *housing_aethernet {
-                    None
-                } else {
-                    Some(destination_zone_id)
-                },
+                destination_zone_id,
                 destination_instance_id,
                 *actor_id,
                 *from_id,
@@ -1333,7 +1294,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 &lua,
-                Some(*territory_id),
+                *territory_id,
                 *pop_range_id,
                 *from_actor_id,
                 *from_id,
@@ -1344,16 +1305,23 @@ pub fn handle_zone_messages(
 
             true
         }
-        ToServer::ZoneIn(from_id, from_actor_id, is_teleport) => {
+        ToServer::ZoneIn(from_id, from_actor_id) => {
             tracing::info!("Player {from_id:?} has finally zoned in, informing other players...");
 
-            // HACK: maybe there's states where you're dead, zone in and yet not a raise?
             let mut data = data.lock();
             let mut is_raise = false;
+            let mut is_teleport = false;
             if let Some(instance) = data.find_actor_instance_mut(*from_actor_id)
                 && let Some(actor) = instance.find_actor_mut(*from_actor_id)
             {
+                // HACK: maybe there's states where you're dead, zone in and yet not raised?
                 is_raise = actor.get_common_spawn().mode == CharacterMode::Dead;
+
+                is_teleport = if let NetworkedActor::Player { teleport_query, .. } = actor {
+                    teleport_query.aetheryte_id != 0
+                } else {
+                    false
+                };
             }
 
             // Inform all clients to play the zone in animation
@@ -1365,7 +1333,7 @@ pub fn handle_zone_messages(
                 let category = ActorControlCategory::ZoneIn {
                     warp_finish_anim: 1,
                     raise_anim: if is_raise { 1 } else { 0 },
-                    unk1: if *is_teleport { 110 } else { 0 },
+                    unk1: if is_teleport { 110 } else { 0 },
                 };
 
                 if id == *from_id {
@@ -1438,7 +1406,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 &lua,
-                Some(zone_id),
+                zone_id,
                 *id,
                 *from_actor_id,
                 *from_id,
@@ -1566,7 +1534,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 &lua,
-                Some(*territory_id),
+                *territory_id,
                 *pop_range_id,
                 *from_actor_id,
                 *from_id,
@@ -1614,7 +1582,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 &lua,
-                Some(zone_id),
+                zone_id,
                 0,
                 *from_actor_id,
                 *from_id,

@@ -24,7 +24,7 @@ impl WorldDatabase {
         &mut self,
         game_data: &mut GameData,
         zone_id: u16,
-        ward_number: u8,
+        ward_number: u16,
     ) -> [kawari::ipc::zone::House; 60] {
         use schema::house::dsl::*;
 
@@ -38,7 +38,7 @@ impl WorldDatabase {
                 let the_house_id: HouseId = (the_house.house_id as u64).into();
 
                 if (the_house_id.territory_type_id == zone_id)
-                    && (the_house_id.ward_index == ward_number)
+                    && (the_house_id.ward_index as u16 == ward_number)
                     && !the_house_id.unit.apartment_flag
                 {
                     let exterior = self
@@ -170,7 +170,7 @@ impl WorldDatabase {
     pub fn find_furniture_in_ward(
         &mut self,
         _zone_id: u16,
-        _ward_number: u8,
+        _ward_number: u16,
         _want_subdivision: bool,
     ) -> Vec<kawari::ipc::zone::Furniture> {
         Vec::new()
