@@ -19,3 +19,4 @@ docs/book
 *.db-journal
 **/.diesel_lock
 perf.data*
+/housing-exports
