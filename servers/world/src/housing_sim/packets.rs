@@ -743,6 +743,14 @@ async fn handle_place_furniture(
                 },
             ))
             .await;
+        connection
+            .send_ipc_self(ServerZoneIpcSegment::new(
+                ServerZoneIpcData::HousingObjectDataValueSet(HousingObjectDataValueSet {
+                    furniture_index: free_flat,
+                    ..Default::default()
+                }),
+            ))
+            .await;
     } else {
         connection
             .send_ipc_self(ServerZoneIpcSegment::new(
@@ -1918,6 +1926,14 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
             connection.housing_sim.is_owner_authorized = true;
             rebuild_house_inventory_from_db(connection, &est, go_indoor);
             send_owned_housing(connection).await;
+            let current_intended = if currently_indoors {
+                TerritoryIntendedUse::HousingIndoor
+            } else if kawari::common::internal_housing_row(current_zone_id).is_some() {
+                TerritoryIntendedUse::HousingOutdoor
+            } else {
+                TerritoryIntendedUse::Town
+            };
+            publish_session_snapshot(connection, current_intended);
 
             if go_indoor {
                 warp_into_estate_interior(connection, &est, None, None).await;

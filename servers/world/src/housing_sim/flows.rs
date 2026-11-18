@@ -30,8 +30,9 @@ use super::db::{
 };
 use super::fixtures::{
     StoredHouseExterior, StoredHouseInterior, appeal_tags_from_row, build_apartment_entries,
-    build_house_list_entry, build_indoor_furniture_lists, build_outdoor_furniture_list,
-    build_owned_housing_data, housing_interior_ready_primary_id, ward_summary_flags_for_estate,
+    build_house_list_entry, build_housing_object_data_value_sets, build_indoor_furniture_lists,
+    build_outdoor_furniture_list, build_owned_housing_data, housing_interior_ready_primary_id,
+    housing_interior_ready_secondary_id, is_fc_estate, ward_summary_flags_for_estate,
 };
 use super::gamedata_ext::{
     HousingCatalog, cached_housing_catalog, default_renovation_row_for_district_and_size,
@@ -731,6 +732,18 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
                 }),
             ))
             .await;
+        let raw_hid = u64::from(house_id);
+        connection
+            .actor_control_self(ActorControlCategory::HousingInteriorFinalizeEmpty {
+                house_id_low: (raw_hid & 0xFFFF_FFFF) as u32,
+                house_id_high: (raw_hid >> 32) as u32,
+                estate_type: if is_apartment_territory(zone_id) {
+                    6
+                } else {
+                    2
+                },
+            })
+            .await;
         return;
     };
 
@@ -746,6 +759,7 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
     let details = stored_interior.to_packet(
         estate.light_level.clamp(0, 5) as u8,
         estate.enable_ssao,
+        plot_size,
         estate.is_apartment,
     );
 
@@ -785,31 +799,45 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
             Some(lists[MAX_INITIAL_INDOOR_FURNITURE_LISTS..].to_vec());
     } else {
         connection.housing_sim.pending_indoor_furniture_list_tail = None;
-        finish_indoor_ready_sequence(connection, &estate, resolved_house_id).await;
+        finish_indoor_ready_sequence(connection, &estate, resolved_house_id, &placed_rows).await;
+    }
+
+    if !is_fc_estate(&estate) && !estate.is_apartment {
+        connection
+            .actor_control_self(ActorControlCategory::HideAdditionalChambersDoor {})
+            .await;
     }
 
     publish_session_snapshot(connection, TerritoryIntendedUse::HousingIndoor);
 }
 
-/// Sends `HousingInteriorReady` (`1010`), silent initial lighting (`1035`), and finalizes indoor manager.
+/// Sends `HousingObjectDataValueSet` (`S>C Opcode 971`) packets for placed indoor furniture rows.
+async fn send_indoor_object_data_value_sets(
+    connection: &mut ZoneConnection,
+    placed_rows: &[HousingFurnitureRow],
+) {
+    for value_set in build_housing_object_data_value_sets(placed_rows) {
+        connection
+            .send_ipc_self(ServerZoneIpcSegment::new(
+                ServerZoneIpcData::HousingObjectDataValueSet(value_set),
+            ))
+            .await;
+    }
+}
+
+/// Sends `HousingObjectDataValueSet` (`971`), `HousingInteriorReady` (`1010`), and silent initial lighting (`1035`).
 async fn finish_indoor_ready_sequence(
     connection: &mut ZoneConnection,
     estate: &HousingEstateRow,
     house_id: HouseId,
+    placed_rows: &[HousingFurnitureRow],
 ) {
-    let raw_hid = u64::from(house_id);
-    connection
-        .actor_control_self(ActorControlCategory::HousingInteriorFinalizeEmpty {
-            house_id_low: (raw_hid & 0xFFFF_FFFF) as u32,
-            house_id_high: (raw_hid >> 32) as u32,
-            estate_type: if estate.is_apartment { 6 } else { 2 },
-        })
-        .await;
+    send_indoor_object_data_value_sets(connection, placed_rows).await;
 
     connection
         .actor_control_self(ActorControlCategory::HousingInteriorReady {
             primary_id: housing_interior_ready_primary_id(house_id),
-            secondary_id: 0,
+            secondary_id: housing_interior_ready_secondary_id(estate.land_ident, house_id),
             unk1: 0,
         })
         .await;
@@ -848,14 +876,22 @@ pub async fn complete_deferred_indoor_tail_on_remodel(
     }
 
     if let Some(ref active) = connection.housing_sim.active_estate.clone() {
-        let estate = {
+        let (estate, placed_rows) = {
             let mut db = connection.database.lock();
-            estate_by_land_ident(db.connection_mut(), active.land_ident)
-                .ok()
-                .flatten()
+            let conn = db.connection_mut();
+            let est = estate_by_land_ident(conn, active.land_ident).ok().flatten();
+            let rows =
+                list_placed_furniture_in_scope(conn, active.land_ident, true).unwrap_or_default();
+            (est, rows)
         };
         if let Some(est) = estate {
-            finish_indoor_ready_sequence(connection, &est, HouseId::from(active.house_id)).await;
+            finish_indoor_ready_sequence(
+                connection,
+                &est,
+                HouseId::from(active.house_id),
+                &placed_rows,
+            )
+            .await;
         }
     }
 
@@ -870,9 +906,39 @@ pub async fn complete_deferred_indoor_tail_on_remodel(
                 spawn,
             ))
             .await;
+
+        if connection.is_in_party() {
+            if !connection.rejoining_party {
+                connection
+                    .handle
+                    .send(ToServer::PartyMemberChangedAreas(
+                        connection.party_id,
+                        connection.player_data.character.service_account_id as u64,
+                        connection.player_data.character.content_id as u64,
+                        connection.player_data.character.actor_id,
+                        connection.player_data.character.name.clone(),
+                        connection.player_data.volatile.zone_id,
+                    ))
+                    .await;
+            } else {
+                connection
+                    .handle
+                    .send(ToServer::PartyMemberReturned(
+                        connection.player_data.character.actor_id,
+                        connection.player_data.volatile.zone_id,
+                        connection.party_id,
+                    ))
+                    .await;
+                connection.rejoining_party = false;
+            }
+        }
+
+        connection.send_stats().await;
+        sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingIndoor).await;
+    } else {
+        connection.housing_sim.pending_indoor_overlay_sync = true;
     }
 
-    sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingIndoor).await;
     true
 }
 
@@ -1172,10 +1238,12 @@ pub async fn execute_housing_reload(
 
 /// Pushes zero-loading-screen live packets for fixture/lighting/material/stain/slot refreshes when inside the same indoor shell.
 pub async fn push_indoor_live_refresh(connection: &mut ZoneConnection, estate: &HousingEstateRow) {
+    let plot_size = PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default();
     let interior = StoredHouseInterior::from_json(&estate.interior_json);
     let details = interior.to_packet(
         estate.light_level.clamp(0, 5) as u8,
         estate.enable_ssao,
+        plot_size,
         estate.is_apartment,
     );
     connection
@@ -1217,6 +1285,7 @@ pub async fn push_indoor_live_refresh(connection: &mut ZoneConnection, estate: &
         }
     }
 
+    send_indoor_object_data_value_sets(connection, &placed).await;
     rebuild_house_inventory_from_db(connection, estate, true);
     sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingIndoor).await;
 }

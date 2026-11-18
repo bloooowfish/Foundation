@@ -7,6 +7,7 @@ use icarus::HousingRenovation::HousingRenovationSheet;
 use icarus::HousingTrainingDoll::HousingTrainingDollSheet;
 use icarus::HousingUnitedExterior::HousingUnitedExteriorSheet;
 use icarus::HousingYardObject::HousingYardObjectSheet;
+use icarus::Item::ItemSheet;
 use icarus::Stain::StainSheet;
 use icarus::VaseFlower::VaseFlowerSheet;
 use kawari::common::{Position, internal_housing_row};
@@ -348,6 +349,23 @@ impl HousingCatalog {
                     .or_insert(id);
             }
             catalog.items_by_id.insert(id, meta);
+        }
+
+        for extra_lang in [Language::English, Language::Japanese, Language::Korean] {
+            if extra_lang == lang {
+                continue;
+            }
+            if let Ok(sheet) = ItemSheet::read_from(&mut game_data.resource, extra_lang) {
+                for (id, row) in (&sheet).into_iter().flatten_subrows() {
+                    let name = row.Name.to_string();
+                    if !name.is_empty() {
+                        catalog
+                            .items_by_lower_name
+                            .entry(name.to_ascii_lowercase())
+                            .or_insert(id);
+                    }
+                }
+            }
         }
 
         if let Some(sheet) = read_sheet_flexible!(StainSheet, &mut game_data.resource, lang) {

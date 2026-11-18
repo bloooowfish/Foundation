@@ -284,6 +284,32 @@ impl HousingSimHub {
         });
     }
 
+    /// Updates `active_estate` on matching online session snapshots immediately and notifies SSE subscribers.
+    pub fn update_active_estate_for_content(
+        &self,
+        content_id: Option<u64>,
+        selection: ActiveEstateSelection,
+    ) {
+        let mut updated_snaps = Vec::new();
+        {
+            let mut guard = self.sessions.write();
+            for snap in guard.values_mut() {
+                if content_id.is_none_or(|cid| cid == snap.content_id) {
+                    snap.active_estate = Some(selection.clone());
+                    updated_snaps.push(snap.clone());
+                }
+            }
+        }
+        for snap in updated_snaps {
+            self.emit_event(HousingSseEvent {
+                kind: "session_state".to_string(),
+                land_ident: Some(selection.land_ident),
+                message: format!("{} @ zone {}", snap.character_name, snap.zone_id),
+                session: Some(snap),
+            });
+        }
+    }
+
     pub fn remove_session(&self, client_id: ClientId) {
         if let Some(removed) = self.sessions.write().remove(&client_id) {
             self.emit_event(HousingSseEvent {

@@ -104,6 +104,8 @@ pub struct ReMakePlaceFixture {
     pub level: String,
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub properties: BTreeMap<String, serde_json::Value>,
 }
@@ -287,6 +289,19 @@ fn flatten_furniture<'a>(
     }
 }
 
+fn resolve_fixture_stain(fixture: &ReMakePlaceFixture, catalog: &HousingCatalog) -> u8 {
+    let (stain, _) = resolve_stain_from_props(&fixture.properties, catalog);
+    if stain != 0 {
+        return stain;
+    }
+    if fixture.color.trim().is_empty() {
+        return 0;
+    }
+    parse_hex_rgb(&fixture.color)
+        .and_then(|rgb| catalog.closest_housing_stain(rgb))
+        .unwrap_or(0)
+}
+
 fn resolve_stain_from_props(
     props: &BTreeMap<String, serde_json::Value>,
     catalog: &HousingCatalog,
@@ -411,8 +426,7 @@ pub fn prepare_apply_layout(
 
             let meta = catalog.resolve_item_by_id_or_name(fixture.item_id, &fixture.name);
             let add_data = meta.map(|m| m.additional_data).unwrap_or(0);
-            let short_style = (add_data & 0xFFFF) as u16;
-            let (stain, _) = resolve_stain_from_props(&fixture.properties, catalog);
+            let stain = resolve_fixture_stain(fixture, catalog);
 
             let floor_idx = if level_l.contains("ground") {
                 Some(0usize)
@@ -455,15 +469,25 @@ pub fn prepare_apply_layout(
                             Some(0) | None => stored_interior.ground_chandelier = add_data,
                             Some(1) => stored_interior.top_chandelier = add_data,
                             Some(2) => stored_interior.cellar_chandelier = add_data,
-                            Some(3) => stored_interior.grand_chandelier = add_data,
+                            Some(3) if target_plot_size == PlotSize::Large => {
+                                stored_interior.grand_chandelier = add_data;
+                            }
                             _ => {}
                         }
                         interior_fixtures_matched += 1;
                     }
                 }
                 "window" | "windows" => {
-                    if short_style != 0 {
-                        stored_interior.window_style = short_style;
+                    let window_id = meta
+                        .and_then(|m| {
+                            catalog
+                                .united_parts_for_item(m.item_id)
+                                .map(|parts| parts[2])
+                                .or_else(|| catalog.exterior_part_id_for_item(m.item_id))
+                        })
+                        .unwrap_or(0);
+                    if window_id != 0 {
+                        stored_interior.window_style = window_id;
                         if stain != 0 {
                             stored_interior.window_stain = stain;
                         }
@@ -471,8 +495,16 @@ pub fn prepare_apply_layout(
                     }
                 }
                 "door" => {
-                    if short_style != 0 {
-                        stored_interior.door_style = short_style;
+                    let door_id = meta
+                        .and_then(|m| {
+                            catalog
+                                .united_parts_for_item(m.item_id)
+                                .map(|parts| parts[3])
+                                .or_else(|| catalog.exterior_part_id_for_item(m.item_id))
+                        })
+                        .unwrap_or(0);
+                    if door_id != 0 {
+                        stored_interior.door_style = door_id;
                         if stain != 0 {
                             stored_interior.door_stain = stain;
                         }
@@ -481,6 +513,9 @@ pub fn prepare_apply_layout(
                 }
                 _ => {}
             }
+        }
+        if target_plot_size != PlotSize::Large {
+            stored_interior.grand_chandelier = 0;
         }
         updated_estate.interior_json = stored_interior.to_json();
     }
@@ -493,7 +528,7 @@ pub fn prepare_apply_layout(
             else {
                 continue;
             };
-            let (stain, _) = resolve_stain_from_props(&fixture.properties, catalog);
+            let stain = resolve_fixture_stain(fixture, catalog);
             if let Some(parts) = catalog.united_parts_for_item(meta.item_id) {
                 stored_exterior.apply_united_parts(parts);
                 if stain != 0 {
@@ -803,7 +838,7 @@ pub fn export_estate_to_layout(
                     item_id: meta.item_id,
                     level: level.to_string(),
                     kind: kind.to_string(),
-                    properties: BTreeMap::new(),
+                    ..Default::default()
                 });
             }
         }
@@ -815,7 +850,7 @@ pub fn export_estate_to_layout(
                     item_id: 0,
                     level: String::new(),
                     kind: "District".to_string(),
-                    properties: BTreeMap::new(),
+                    ..Default::default()
                 });
             }
         }
@@ -827,7 +862,7 @@ pub fn export_estate_to_layout(
                 item_id: meta.item_id,
                 level: "Ground Floor".to_string(),
                 kind: "Window".to_string(),
-                properties: BTreeMap::new(),
+                ..Default::default()
             });
         }
         if interior.door_style != 0
@@ -838,7 +873,7 @@ pub fn export_estate_to_layout(
                 item_id: meta.item_id,
                 level: "Ground Floor".to_string(),
                 kind: "Door".to_string(),
-                properties: BTreeMap::new(),
+                ..Default::default()
             });
         }
 
@@ -856,7 +891,7 @@ pub fn export_estate_to_layout(
                 item_id: united.item_id,
                 level: String::new(),
                 kind: "Exterior Wall".to_string(),
-                properties: BTreeMap::new(),
+                ..Default::default()
             });
         } else {
             let parts = exterior.part_ids();
@@ -872,7 +907,7 @@ pub fn export_estate_to_layout(
                         item_id: meta.item_id,
                         level: String::new(),
                         kind: exterior_type_for_slot(slot).to_string(),
-                        properties: BTreeMap::new(),
+                        ..Default::default()
                     });
                 }
             }
@@ -1083,6 +1118,10 @@ pub struct PresetFileSummary {
     pub indoor_count: usize,
     pub outdoor_count: usize,
     pub modified_unix_ms: u64,
+    #[serde(default)]
+    pub interior_fixtures: Vec<String>,
+    #[serde(default)]
+    pub exterior_fixtures: Vec<String>,
 }
 
 pub fn scan_preset_directory(dir: &Path) -> Vec<PresetFileSummary> {
@@ -1115,6 +1154,34 @@ pub fn scan_preset_directory(dir: &Path) -> Vec<PresetFileSummary> {
             .find(|f| f.kind.eq_ignore_ascii_case("district"))
             .map(|f| f.name.clone())
             .unwrap_or_default();
+        let interior_fixtures = layout
+            .interior_fixture
+            .iter()
+            .filter(|f| {
+                !f.name.trim().is_empty()
+                    && !f.kind.eq_ignore_ascii_case("district")
+                    && !f.kind.eq_ignore_ascii_case("side door")
+            })
+            .map(|f| {
+                if f.kind.trim().is_empty() {
+                    f.name.clone()
+                } else {
+                    format!("{}: {}", f.kind.trim(), f.name.trim())
+                }
+            })
+            .collect();
+        let exterior_fixtures = layout
+            .exterior_fixture
+            .iter()
+            .filter(|f| !f.name.trim().is_empty())
+            .map(|f| {
+                if f.kind.trim().is_empty() {
+                    f.name.clone()
+                } else {
+                    format!("{}: {}", f.kind.trim(), f.name.trim())
+                }
+            })
+            .collect();
         let mut indoor_flat = Vec::new();
         flatten_furniture(&layout.interior_furniture, None, &mut indoor_flat);
         let mut outdoor_flat = Vec::new();
@@ -1140,6 +1207,8 @@ pub fn scan_preset_directory(dir: &Path) -> Vec<PresetFileSummary> {
             indoor_count: indoor_flat.len(),
             outdoor_count: outdoor_flat.len(),
             modified_unix_ms,
+            interior_fixtures,
+            exterior_fixtures,
         });
     }
     results.sort_by(|a, b| b.modified_unix_ms.cmp(&a.modified_unix_ms));
@@ -1192,14 +1261,14 @@ mod tests {
                     item_id: 0,
                     level: String::new(),
                     kind: "District".to_string(),
-                    properties: BTreeMap::new(),
+                    ..Default::default()
                 },
                 ReMakePlaceFixture {
                     name: "Pure White Interior Wall".to_string(),
                     item_id: 17965,
                     level: "Ground Floor".to_string(),
                     kind: "Wall".to_string(),
-                    properties: BTreeMap::new(),
+                    ..Default::default()
                 },
             ],
             exterior_fixture: vec![ReMakePlaceFixture {
@@ -1207,7 +1276,7 @@ mod tests {
                 item_id: 20701,
                 level: String::new(),
                 kind: "Exterior Wall".to_string(),
-                properties: BTreeMap::new(),
+                ..Default::default()
             }],
             interior_furniture: vec![ReMakePlaceFurniture {
                 name: "White Rectangular Partition".to_string(),
@@ -1293,5 +1362,80 @@ mod tests {
         assert!((ext_loc[0] - 400.0).abs() < 0.05);
         assert!((ext_loc[1] - 200.0).abs() < 0.05);
         assert!((ext_loc[2] - 100.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn prepare_apply_layout_extracts_united_window_door_parts_and_fixture_color() {
+        let mut world_db = WorldDatabase::new_in_memory();
+        let conn = world_db.connection_mut();
+        let catalog = HousingCatalog::mock_for_tests();
+
+        let spec = EnsureEstateSpec {
+            territory_type_id: 340,
+            world_id: 79,
+            ward_index: 0,
+            division: 0,
+            plot_index: 0, // Medium plot
+            room_number: 0,
+            is_apartment: false,
+            plot_size: PlotSize::Medium,
+            is_fc: false,
+            owner_content_id: 42,
+            owner_name: "Tester".to_string(),
+            estate_name: "Medium Fixture House".to_string(),
+            exterior_json: "{}".to_string(),
+            interior_json: "{}".to_string(),
+        };
+        let estate = ensure_estate(conn, &spec).unwrap();
+
+        let layout = ReMakePlaceLayout {
+            house_size: "Medium".to_string(),
+            interior_fixture: vec![
+                ReMakePlaceFixture {
+                    name: "Glade Cottage Wall".to_string(),
+                    item_id: 6900,
+                    level: "Main".to_string(),
+                    kind: "Door".to_string(),
+                    color: "C02020FF".to_string(),
+                    properties: BTreeMap::new(),
+                },
+                ReMakePlaceFixture {
+                    name: "Shirogane Castle Walls".to_string(),
+                    item_id: 20701,
+                    level: "Main".to_string(),
+                    kind: "Window".to_string(),
+                    color: "EFEFEFFF".to_string(),
+                    properties: BTreeMap::new(),
+                },
+                ReMakePlaceFixture {
+                    name: "Flat Ceiling Lamp".to_string(),
+                    item_id: 17979,
+                    level: "Main".to_string(),
+                    kind: "Light".to_string(),
+                    ..Default::default()
+                },
+            ],
+            exterior_fixture: vec![ReMakePlaceFixture {
+                name: "Shirogane Castle Walls".to_string(),
+                item_id: 20701,
+                level: String::new(),
+                kind: "Exterior Wall".to_string(),
+                color: "C02020FF".to_string(),
+                properties: BTreeMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        let prepared = prepare_apply_layout(&estate, &layout, &catalog, PresetScope::All, 42);
+        let stored_int = StoredHouseInterior::from_json(&prepared.updated_estate.interior_json);
+        let stored_ext = StoredHouseExterior::from_json(&prepared.updated_estate.exterior_json);
+
+        // Door uses exterior part id (25), not masked AdditionalData; Window uses united parts[2] (503).
+        assert_eq!(stored_int.door_style, 25);
+        assert_eq!(stored_int.door_stain, 24);
+        assert_eq!(stored_int.window_style, 503);
+        assert_eq!(stored_int.window_stain, 1);
+        assert_eq!(stored_int.grand_chandelier, 0);
+        assert_eq!(stored_ext.roof_stain, 24);
     }
 }

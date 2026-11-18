@@ -2,14 +2,15 @@ use kawari::common::{HouseId, HousingFlag};
 use kawari::ipc::zone::{
     ApartmentListEntry, ExteriorRemodelItemOperation, Furniture, FurnitureList, House,
     HouseExterior, HousingAppealTag, HousingExteriorAppearanceUpdate, HousingFlags,
-    HousingInteriorDetails, InteriorRemodelItemOperation, PlotSize,
+    HousingInteriorDetails, HousingObjectDataValueSet, InteriorRemodelItemOperation, PlotSize,
 };
 use serde_derive::{Deserialize, Serialize};
 
 use super::containers::{
     MAX_INDOOR_PLACED_SLOTS, flat_slot_for_placed_container, indoor_slot_capacity,
+    is_interior_placed_container,
 };
-use super::db::{HousingEstateRow, HousingFurnitureRow, plot_state_for_row};
+use super::db::{FurnitureObjectData, HousingEstateRow, HousingFurnitureRow, plot_state_for_row};
 use super::gamedata_ext::HousingCatalog;
 
 pub const DEFAULT_MINIMAL_WALL: u32 = 66111; // Pure White Interior Wall
@@ -296,11 +297,12 @@ impl StoredHouseInterior {
     }
 
     /// Converts stored interior state into the Patch `7.58` 56-byte `HousingInteriorDetails` packet.
-    /// Zeroes upper/basement/grand chandelier fields for apartments to avoid destabilizing the client.
+    /// Zeroes upper/basement/grand chandelier fields for apartments and non-Large grand chandeliers.
     pub fn to_packet(
         &self,
         light_level: u8,
         enable_ssao: bool,
+        plot_size: PlotSize,
         is_apartment: bool,
     ) -> HousingInteriorDetails {
         let mut details = HousingInteriorDetails {
@@ -333,6 +335,8 @@ impl StoredHouseInterior {
             details.cellar_walls = 0;
             details.cellar_floor = 0;
             details.cellar_chandelier = 0;
+            details.grand_chandelier = 0;
+        } else if plot_size != PlotSize::Large {
             details.grand_chandelier = 0;
         }
         details
@@ -590,6 +594,78 @@ pub fn housing_interior_ready_primary_id(house_id: HouseId) -> u64 {
     raw.rotate_right(32)
 }
 
+/// Computes `secondary_id` (`((cookie as u64) << 32) | 12`) expected by `ActorControlCategory::HousingInteriorReady`.
+pub fn housing_interior_ready_secondary_id(land_ident: i32, house_id: HouseId) -> u64 {
+    const HOUSING_READY_MODE: u32 = 12;
+    let mut hash = 0x811c_9dc5u32;
+    for byte in land_ident
+        .to_le_bytes()
+        .into_iter()
+        .chain(u64::from(house_id).to_le_bytes())
+    {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    let cookie = hash.max(1);
+    ((cookie as u64) << 32) | (HOUSING_READY_MODE as u64)
+}
+
+/// Builds `HousingObjectDataValueSet` (`S>C Opcode 971`) entries for placed indoor furniture rows.
+pub fn build_housing_object_data_value_sets(
+    rows: &[HousingFurnitureRow],
+) -> Vec<HousingObjectDataValueSet> {
+    let mut out = Vec::new();
+    for row in rows {
+        if !row.placed {
+            continue;
+        }
+        let Some(container) = super::containers::container_from_i32(row.container_type) else {
+            continue;
+        };
+        if !is_interior_placed_container(container) {
+            continue;
+        }
+        let Some(flat_slot) = flat_slot_for_placed_container(container, row.slot as u16) else {
+            continue;
+        };
+
+        let mut pkt = HousingObjectDataValueSet {
+            furniture_index: flat_slot,
+            ..Default::default()
+        };
+
+        if let Ok(obj) = serde_json::from_str::<FurnitureObjectData>(&row.object_data_json) {
+            if let Some(aq) = obj.aquarium {
+                pkt.value_count = 3;
+                pkt.values[0] = aq.water_param;
+                pkt.values[1] = aq.fish_params[0];
+                pkt.values[2] = aq.fish_params[1];
+                pkt.values[3] = aq.fish_params[2];
+                pkt.param_a[0] = aq.trim_item_id as u8;
+            } else if !obj.values.is_empty() {
+                let count = obj.values.len().min(8);
+                pkt.value_count = count as u8;
+                for i in 0..count {
+                    pkt.values[i] = obj.values[i];
+                }
+                for (i, &v) in obj.param_a.iter().take(8).enumerate() {
+                    pkt.param_a[i] = v;
+                }
+                for (i, &v) in obj.param_b.iter().take(8).enumerate() {
+                    pkt.param_b[i] = v;
+                }
+                for (i, &v) in obj.param_c.iter().take(8).enumerate() {
+                    pkt.param_c[i] = v;
+                }
+            }
+        }
+
+        out.push(pkt);
+    }
+    out.sort_by_key(|v| v.furniture_index);
+    out
+}
+
 /// Builds chunked dense `FurnitureList` packets for an indoor estate (preserving flat slots `0..capacity`).
 pub fn build_indoor_furniture_lists(
     house_id: HouseId,
@@ -597,13 +673,7 @@ pub fn build_indoor_furniture_lists(
     is_apartment: bool,
     rows: &[HousingFurnitureRow],
 ) -> Vec<FurnitureList> {
-    let estate_type = if is_apartment {
-        kawari::common::EstateType::ApartmentRoom
-    } else if house_id.unit.apartment_flag {
-        kawari::common::EstateType::PrivateChambers
-    } else {
-        kawari::common::EstateType::PersonalEstate
-    };
+    let estate_type = kawari::common::EstateType::default();
 
     let capacity = indoor_slot_capacity(plot_size, is_apartment).min(MAX_INDOOR_PLACED_SLOTS);
     let mut max_slot_used = 0usize;
@@ -797,5 +867,99 @@ mod tests {
         assert_eq!(owned_b[1].id, HouseId::from(shiro_large.house_id as u64));
         assert_eq!(owned_b[1].flags & 0x0B, 0x0B);
         assert_eq!(apt_b.id, HouseId::from(emp_apt.house_id as u64));
+    }
+
+    #[test]
+    fn build_housing_object_data_value_sets_covers_all_placed_slots_up_to_600() {
+        let mut rows = Vec::new();
+        for flat in 0..595u16 {
+            let (container, slot) = super::super::containers::indoor_container_for_flat_slot(flat)
+                .expect("slot < 600 must resolve");
+            let obj_json = if flat == 10 {
+                serde_json::to_string(&FurnitureObjectData {
+                    aquarium: Some(super::super::db::AquariumObjectState {
+                        trim_item_id: 21,
+                        water_param: 4,
+                        fish_item_ids: [100, 101, 0, 0],
+                        fish_params: [11, 22, 33, 44],
+                    }),
+                    ..Default::default()
+                })
+                .unwrap()
+            } else {
+                "{}".to_string()
+            };
+            rows.push(HousingFurnitureRow {
+                land_ident: 34000003,
+                container_type: container as i32,
+                slot: slot as i32,
+                item_id: 48110,
+                catalog_id: 1594,
+                placed: true,
+                object_data_json: obj_json,
+                ..Default::default()
+            });
+        }
+        // Outdoor / storeroom rows must be filtered out.
+        rows.push(HousingFurnitureRow {
+            land_ident: 34000003,
+            container_type: kawari::common::ContainerType::HousingExteriorPlacedItems as i32,
+            slot: 0,
+            placed: true,
+            ..Default::default()
+        });
+        rows.push(HousingFurnitureRow {
+            land_ident: 34000003,
+            container_type: kawari::common::ContainerType::HousingInteriorStoreroom1 as i32,
+            slot: 0,
+            placed: false,
+            ..Default::default()
+        });
+
+        let sets = build_housing_object_data_value_sets(&rows);
+        assert_eq!(sets.len(), 595);
+        assert_eq!(sets[0].furniture_index, 0);
+        assert_eq!(sets[594].furniture_index, 594);
+        assert_eq!(sets[10].furniture_index, 10);
+        assert_eq!(sets[10].value_count, 3);
+        assert_eq!(sets[10].values[0], 4);
+        assert_eq!(sets[10].values[1], 11);
+        assert_eq!(sets[10].values[2], 22);
+        assert_eq!(sets[10].values[3], 33);
+        assert_eq!(sets[10].param_a[0], 21);
+    }
+
+    #[test]
+    fn housing_interior_ready_secondary_id_encodes_mode_12_and_nonzero_cookie() {
+        let id_a = super::super::db::make_house_id(340, 63, 0, 0, 0, 0, false);
+        let id_b = super::super::db::make_house_id(340, 63, 0, 0, 2, 0, false);
+        let sec_a = housing_interior_ready_secondary_id(34000001, id_a);
+        let sec_b = housing_interior_ready_secondary_id(34000003, id_b);
+        assert_eq!(sec_a & 0xFFFF_FFFF, 12);
+        assert_eq!(sec_b & 0xFFFF_FFFF, 12);
+        assert_ne!(sec_a >> 32, 0);
+        assert_ne!(sec_b >> 32, 0);
+        assert_ne!(sec_a, sec_b);
+    }
+
+    #[test]
+    fn stored_house_interior_to_packet_zeroes_grand_chandelier_for_non_large() {
+        let interior = StoredHouseInterior {
+            grand_chandelier: 65795,
+            window_style: 2600,
+            door_style: 521,
+            ..Default::default()
+        };
+        let med = interior.to_packet(0, true, PlotSize::Medium, false);
+        assert_eq!(med.grand_chandelier, 0);
+        assert_eq!(med.window_style, 2600);
+
+        let large = interior.to_packet(0, true, PlotSize::Large, false);
+        assert_eq!(large.grand_chandelier, 65795);
+
+        let apt = interior.to_packet(0, true, PlotSize::Small, true);
+        assert_eq!(apt.grand_chandelier, 0);
+        assert_eq!(apt.window_style, 0);
+        assert_eq!(apt.door_style, 0);
     }
 }

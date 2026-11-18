@@ -26,7 +26,7 @@ use super::db::{
 };
 use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
 use super::flows::{
-    apply_preset_layout_with_catalog, target_indoor_territory_for_estate,
+    apply_preset_layout_with_catalog, build_selection_from_row, target_indoor_territory_for_estate,
     unlock_characters_in_database,
 };
 use super::gamedata_ext::{
@@ -406,7 +406,16 @@ async fn switch_session_handler(
     let target_content_id = req
         .owner_content_id
         .or_else(|| active_session.map(|s| s.content_id));
+    let currently_indoors = active_session
+        .is_some_and(|s| s.intended_use == kawari::common::TerritoryIntendedUse::HousingIndoor);
+    let go_indoor_hint = req
+        .enter_interior
+        .unwrap_or(estate.is_apartment || currently_indoors);
 
+    hub.update_active_estate_for_content(
+        target_content_id,
+        build_selection_from_row(&estate, go_indoor_hint),
+    );
     hub.emit_event(HousingSseEvent {
         kind: "session_switched".to_string(),
         land_ident: Some(estate.land_ident),
