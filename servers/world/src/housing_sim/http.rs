@@ -25,7 +25,10 @@ use super::db::{
     save_estate,
 };
 use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
-use super::flows::{apply_preset_layout_with_catalog, target_indoor_territory_for_estate};
+use super::flows::{
+    apply_preset_layout_with_catalog, target_indoor_territory_for_estate,
+    unlock_characters_in_database,
+};
 use super::gamedata_ext::{
     display_name_for_renovation, normalize_district_style_name, renovation_row_for_style_and_size,
 };
@@ -59,6 +62,8 @@ pub fn router(hub: Arc<HousingSimHub>) -> Router {
         .route("/status", get(status_handler))
         .route("/events", get(events_handler))
         .route("/session/switch", post(switch_session_handler))
+        .route("/session/unlock-all", post(unlock_all_session_handler))
+        .route("/session/give-kit", post(give_kit_handler))
         .route("/estates", get(list_estates_handler))
         .route("/estates/ensure", post(ensure_estate_handler))
         .route(
@@ -424,6 +429,118 @@ async fn switch_session_handler(
         estate,
         target_indoor_territory,
         online_sessions_notified: sessions.len(),
+    }))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct UnlockAllSessionRequest {
+    pub content_id: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct UnlockAllSessionResponse {
+    pub unlocked_characters: usize,
+    pub online_sessions_notified: usize,
+    pub character_names: Vec<String>,
+}
+
+async fn unlock_all_session_handler(
+    State(hub): State<Arc<HousingSimHub>>,
+    body: Option<Json<UnlockAllSessionRequest>>,
+) -> ApiResult<UnlockAllSessionResponse> {
+    let req = body.map(|b| b.0).unwrap_or_default();
+    let names = {
+        let mut db = hub.database.lock();
+        unlock_characters_in_database(&mut db, hub.game_data.as_deref(), req.content_id)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
+
+    let online_sessions = hub.list_online_sessions();
+    let notified = online_sessions
+        .iter()
+        .filter(|s| req.content_id.is_none_or(|cid| cid == s.content_id))
+        .count();
+
+    hub.send_to_server(ToServer::HousingSim(
+        HousingSimToServer::UnlockClientSession {
+            content_id: req.content_id,
+        },
+    ))
+    .await;
+
+    hub.emit_event(HousingSseEvent {
+        kind: "session_unlocked".to_string(),
+        land_ident: None,
+        message: if names.is_empty() {
+            "No character records matched unlock request.".to_string()
+        } else {
+            format!("Unlocked full access for: {}", names.join(", "))
+        },
+        session: None,
+    });
+
+    Ok(Json(UnlockAllSessionResponse {
+        unlocked_characters: names.len(),
+        online_sessions_notified: notified,
+        character_names: names,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct GiveKitRequest {
+    #[serde(default = "default_kit_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub content_id: Option<u64>,
+}
+
+fn default_kit_kind() -> String {
+    "indoor".to_string()
+}
+
+#[derive(Serialize)]
+pub struct GiveKitResponse {
+    pub kind: String,
+    pub online_sessions_notified: usize,
+}
+
+async fn give_kit_handler(
+    State(hub): State<Arc<HousingSimHub>>,
+    Json(req): Json<GiveKitRequest>,
+) -> ApiResult<GiveKitResponse> {
+    let normalized = req.kind.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "indoor" | "outdoor" | "npc") {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "kind must be one of 'indoor', 'outdoor', or 'npc'",
+        ));
+    }
+
+    let online_sessions = hub.list_online_sessions();
+    let notified = online_sessions
+        .iter()
+        .filter(|s| req.content_id.is_none_or(|cid| cid == s.content_id))
+        .count();
+
+    hub.send_to_server(ToServer::HousingSim(
+        HousingSimToServer::GiveClientSampleKit {
+            content_id: req.content_id,
+            kind: normalized.clone(),
+        },
+    ))
+    .await;
+
+    hub.emit_event(HousingSseEvent {
+        kind: "kit_granted".to_string(),
+        land_ident: None,
+        message: format!("Dispatched '{normalized}' sample furniture kit."),
+        session: None,
+    });
+
+    Ok(Json(GiveKitResponse {
+        kind: normalized,
+        online_sessions_notified: notified,
     }))
 }
 
@@ -1277,5 +1394,64 @@ mod tests {
 
         let all = list_estates_handler(State(hub)).await.unwrap().0;
         assert_eq!(all.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn http_unlock_all_and_give_kit_dispatch_server_messages() {
+        let Some(game_data) = crate::test_game_data() else {
+            return;
+        };
+        let (hub, mut rx) = test_hub();
+        {
+            let mut db = hub.database.lock();
+            db.create_player_data(
+                1,
+                "UnlockTarget",
+                &crate::CharaMake {
+                    customize: physis::savedata::chardat::CustomizeData {
+                        race: physis::race::Race::Hyur,
+                        tribe: physis::race::Tribe::Highlander,
+                        ..Default::default()
+                    },
+                    classjob_id: 1,
+                    ..Default::default()
+                }
+                .to_json(),
+                1,
+                181,
+                crate::inventory::Inventory::default(),
+                game_data,
+            );
+        }
+
+        let res = unlock_all_session_handler(State(hub.clone()), None)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(res.unlocked_characters, 1);
+        assert_eq!(res.character_names, vec!["UnlockTarget".to_string()]);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ToServer::HousingSim(HousingSimToServer::UnlockClientSession { content_id: None })
+        ));
+
+        let kit = give_kit_handler(
+            State(hub),
+            Json(GiveKitRequest {
+                kind: "indoor".to_string(),
+                content_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(kit.kind, "indoor");
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ToServer::HousingSim(HousingSimToServer::GiveClientSampleKit {
+                content_id: None,
+                ref kind,
+            }) if kind == "indoor"
+        ));
     }
 }

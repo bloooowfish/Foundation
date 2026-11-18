@@ -43,10 +43,11 @@ use super::fixtures::{
 use super::flows::{
     build_selection_from_row, complete_deferred_indoor_tail_on_remodel, connection_catalog,
     ensure_local_apartment_estate, ensure_local_plot_estate, execute_housing_reload,
-    publish_session_snapshot, push_indoor_live_refresh, rebuild_house_inventory_from_db,
-    send_apartment_list_from_db, send_housing_placard_info, send_housing_ward_info,
-    send_owned_housing, sync_current_overlays_for_connection, target_indoor_territory_for_estate,
-    warp_into_estate_interior, warp_to_apartment_outdoor, warp_to_estate_outdoor,
+    give_sample_kit_to_connection, publish_session_snapshot, push_indoor_live_refresh,
+    rebuild_house_inventory_from_db, send_apartment_list_from_db, send_housing_placard_info,
+    send_housing_ward_info, send_owned_housing, sync_current_overlays_for_connection,
+    target_indoor_territory_for_estate, unlock_online_connection, warp_into_estate_interior,
+    warp_to_apartment_outdoor, warp_to_estate_outdoor,
 };
 use super::gamedata_ext::cached_housing_catalog;
 use super::overlays::{
@@ -1808,6 +1809,26 @@ pub(crate) fn handle_server_housing_message(
                 ));
             }
         }
+        HousingSimToServer::UnlockClientSession { content_id } => {
+            let mut network = network.lock();
+            for (handle, _state) in network.clients.values_mut() {
+                if content_id.is_none_or(|cid| cid == handle.content_id) {
+                    let _ = handle.send(FromServer::HousingSim(
+                        HousingSimFromServer::UnlockCharacter,
+                    ));
+                }
+            }
+        }
+        HousingSimToServer::GiveClientSampleKit { content_id, kind } => {
+            let mut network = network.lock();
+            for (handle, _state) in network.clients.values_mut() {
+                if content_id.is_none_or(|cid| cid == handle.content_id) {
+                    let _ = handle.send(FromServer::HousingSim(
+                        HousingSimFromServer::GiveSampleKit { kind: kind.clone() },
+                    ));
+                }
+            }
+        }
     }
 
     true
@@ -1903,6 +1924,17 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
             } else {
                 warp_to_estate_outdoor(connection, &est, None, None).await;
             }
+        }
+        HousingSimFromServer::UnlockCharacter => {
+            unlock_online_connection(connection).await;
+        }
+        HousingSimFromServer::GiveSampleKit { kind } => {
+            let added = give_sample_kit_to_connection(connection, kind).await;
+            connection
+                .send_notice(&format!(
+                    "[Housing] Added {added} sample '{kind}' furnishings to inventory."
+                ))
+                .await;
         }
         HousingSimFromServer::PushOverlaySync => {
             let zone_id = connection.player_data.volatile.zone_id as u16;

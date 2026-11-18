@@ -177,6 +177,13 @@ pub enum HousingSimToServer {
         preserve_player_pos: bool,
         enter_if_elsewhere: bool,
     },
+    UnlockClientSession {
+        content_id: Option<u64>,
+    },
+    GiveClientSampleKit {
+        content_id: Option<u64>,
+        kind: String,
+    },
 }
 
 /// Messages sent from `server_main_loop` back to specific `ZoneConnection`s.
@@ -191,6 +198,10 @@ pub enum HousingSimFromServer {
     SwitchActiveEstate {
         land_ident: i32,
         enter_interior: Option<bool>,
+    },
+    UnlockCharacter,
+    GiveSampleKit {
+        kind: String,
     },
     PushOverlaySync,
 }

@@ -4,17 +4,19 @@ use kawari::common::{
     ContainerType, EstateType, HouseId, HousingFlag, PlotState, Position, TerritoryIntendedUse,
     WarpType, internal_housing_row,
 };
+use kawari::constants::COMPLETED_QUEST_BITMASK_SIZE;
 use kawari::ipc::zone::{
     ActorControlCategory, ApartmentBuildingState, ApartmentList, AvailabilityType, FurnitureList,
-    House, HouseList, HousingEstateGreeting, HousingInteriorDetails, HousingOccupiedLandInfo,
-    HousingVacantLandInfo, HousingWardInfo, HousingWardSummaryItem, IndoorFurnitureMaterialUpdated,
-    PlotSize, PurchaseType, ServerZoneIpcData, ServerZoneIpcSegment, TenantType,
-    UpdateMapMarkersForWardDivision, WardDivision, WardDivisionInfo, WardMapInfo, WardMapInfoFlags,
+    GameMasterRank, GrandCompany as IpcGrandCompany, House, HouseList, HousingEstateGreeting,
+    HousingInteriorDetails, HousingOccupiedLandInfo, HousingVacantLandInfo, HousingWardInfo,
+    HousingWardSummaryItem, IndoorFurnitureMaterialUpdated, PlotSize, PurchaseType,
+    ServerZoneIpcData, ServerZoneIpcSegment, TenantType, UpdateMapMarkersForWardDivision,
+    WardDivision, WardDivisionInfo, WardMapInfo, WardMapInfoFlags,
 };
 
 use crate::common::ToServer;
-use crate::inventory::Item;
-use crate::{GameData, WorldDatabase, ZoneConnection};
+use crate::inventory::{CurrencyKind, Item, Storage};
+use crate::{GameData, ItemInfoQuery, PlayerData, WorldDatabase, ZoneConnection};
 
 use super::containers::{
     MAX_EXTERIOR_PLACED_SLOTS, MAX_INDOOR_PLACED_SLOTS, containers_for_request,
@@ -1511,4 +1513,340 @@ pub async fn send_apartment_list_from_db(connection: &mut ZoneConnection, starti
             },
         )))
         .await;
+}
+
+/// Applies full simulator unlock permissions and unrestricted access onto `PlayerData`.
+/// Returns `true` if the character was in an intro zone (`181..=183`) or uninitialized origin and was moved to Limsa Lominsa Upper Decks (`128`).
+pub fn apply_simulator_unlock_to_player_data(
+    player_data: &mut PlayerData,
+    exp_index: Option<i8>,
+) -> bool {
+    let had_cutscene_2 = player_data.unlock.cutscene_seen.contains(2);
+
+    player_data.character.gm_rank = GameMasterRank::Debug;
+
+    player_data.unlock.unlocks.set_all();
+    player_data.unlock.seen_active_help.set_all();
+    player_data.unlock.minions.set_all();
+    player_data.unlock.mounts.set_all();
+    player_data.unlock.orchestrion_rolls.set_all();
+    player_data.unlock.cutscene_seen.set_all();
+    player_data.unlock.ornaments.set_all();
+    player_data.unlock.caught_fish.set_all();
+    player_data.unlock.caught_spearfish.set_all();
+    player_data.unlock.adventures.set_all();
+    player_data.unlock.triple_triad_cards.set_all();
+    player_data.unlock.glasses_styles.set_all();
+    player_data.unlock.chocobo_taxi_stands.set_all();
+    player_data.unlock.titles.set_all();
+    player_data.companion.unlocked_equip.set_all();
+
+    for id in 1..239 {
+        player_data.aetheryte.unlocked.set(id);
+    }
+    player_data.aether_current.unlocked.set_all();
+    player_data.aether_current.comp_flg_set.set_all();
+
+    player_data.content.unlocked_special_content.set_all();
+    player_data.content.unlocked_raids.set_all();
+    player_data.content.unlocked_dungeons.set_all();
+    player_data.content.unlocked_guildhests.set_all();
+    player_data.content.unlocked_trials.set_all();
+    player_data.content.unlocked_crystalline_conflicts.set_all();
+    player_data.content.unlocked_frontlines.set_all();
+    player_data.content.cleared_raids.set_all();
+    player_data.content.cleared_dungeons.set_all();
+    player_data.content.cleared_guildhests.set_all();
+    player_data.content.cleared_trials.set_all();
+    player_data.content.cleared_crystalline_conflicts.set_all();
+    player_data.content.cleared_frontlines.set_all();
+    player_data.content.cleared_masked_carnivale.set_all();
+    player_data.content.unlocked_misc_content.set_all();
+    player_data.content.cleared_misc_content.set_all();
+
+    player_data.quest.completed.data = vec![0xFF; COMPLETED_QUEST_BITMASK_SIZE];
+    player_data.quest.completed_legacy.set_all();
+    player_data.quest.unlocked_map_markers.set_all();
+    player_data.quest.completed_levequests.set_all();
+
+    player_data.mentor.is_novice = 0;
+
+    if player_data.grand_company.active_company == IpcGrandCompany::None {
+        player_data.grand_company.active_company = IpcGrandCompany::Maelstrom;
+    }
+    if player_data.grand_company.company_ranks.0.len() < 3 {
+        player_data.grand_company.company_ranks.0.resize(3, 11);
+    }
+    for rank in &mut player_data.grand_company.company_ranks.0 {
+        *rank = (*rank).max(11);
+    }
+
+    if let Some(idx) = exp_index
+        && idx >= 0
+        && let Some(slot) = player_data.classjob.levels.0.get_mut(idx as usize)
+    {
+        *slot = (*slot).max(100);
+    }
+    for level in &mut player_data.classjob.levels.0 {
+        if *level > 0 {
+            *level = (*level).max(100);
+        }
+    }
+
+    let gil = player_data.inventory.currency.get_slot_mut(0);
+    gil.item_id = CurrencyKind::Gil as u32;
+    gil.quantity = gil.quantity.max(99_999_999);
+
+    let in_intro = matches!(player_data.volatile.zone_id, 181..=183)
+        || (!had_cutscene_2 && player_data.volatile.position.0 == glam::Vec3A::ZERO);
+    if in_intro {
+        player_data.volatile.zone_id = 128;
+        player_data.volatile.position = Position(glam::Vec3A::new(0.0, 40.0, 0.0));
+        player_data.volatile.rotation = 0.0;
+    }
+    in_intro
+}
+
+/// Persists full simulator unlock across one or all characters in `world.db`.
+pub fn unlock_characters_in_database(
+    db: &mut WorldDatabase,
+    game_data: Option<&parking_lot::Mutex<GameData>>,
+    filter_content_id: Option<u64>,
+) -> Result<Vec<String>, diesel::result::Error> {
+    let characters = db.find_character_rows(filter_content_id)?;
+    let mut unlocked_names = Vec::with_capacity(characters.len());
+
+    for character in characters {
+        let mut pdata = db.load_player_data_raw(character)?;
+        let exp_index = game_data.and_then(|gd| {
+            gd.lock()
+                .get_exp_array_index(pdata.classjob.current_class as u16)
+        });
+        apply_simulator_unlock_to_player_data(&mut pdata, exp_index);
+        let name = pdata.character.name.clone();
+        db.commit_player_data(&pdata);
+        unlocked_names.push(name);
+    }
+
+    Ok(unlocked_names)
+}
+
+/// Applies full simulator unlock to a live connected `ZoneConnection`, persists to DB, and sends immediate packets.
+pub async fn unlock_online_connection(connection: &mut ZoneConnection) {
+    let current_class = connection.player_data.classjob.current_class as u16;
+    let current_zone_id = connection.player_data.volatile.zone_id;
+    let exp_index = connection
+        .game_data
+        .lock()
+        .get_exp_array_index(current_class);
+    let was_in_intro =
+        apply_simulator_unlock_to_player_data(&mut connection.player_data, exp_index);
+
+    {
+        let mut db = connection.database.lock();
+        db.commit_player_data(&connection.player_data);
+    }
+
+    connection
+        .actor_control_self(ActorControlCategory::ToggleCutsceneSeen {
+            id: 2,
+            unlocked: true,
+        })
+        .await;
+
+    for id in 1..239 {
+        connection
+            .actor_control_self(ActorControlCategory::LearnTeleport { id, unlocked: true })
+            .await;
+    }
+
+    connection.send_quest_information().await;
+    connection.send_grand_company_info().await;
+    connection
+        .actor_control_self(ActorControlCategory::SetLevel {
+            classjob_id: current_class as u32,
+            level: 100,
+        })
+        .await;
+    connection.update_class_info().await;
+    connection.send_stats().await;
+    connection.send_inventory().await;
+
+    if was_in_intro || matches!(current_zone_id, 181..=183) {
+        connection
+            .change_zone(
+                128,
+                Some(Position(glam::Vec3A::new(0.0, 40.0, 0.0))),
+                Some(0.0),
+                WarpType::Normal,
+                0,
+            )
+            .await;
+    }
+
+    connection
+        .send_notice(
+            "[Housing] Full character unlock applied (GM Debug, Lv100, GC Rank 11, 99,999,999 Gil, Teleports, Quests, Orchestrion). Collection masks refresh fully after relog if you were already logged in.",
+        )
+        .await;
+}
+
+/// Grants a sample indoor/outdoor/NPC furniture kit into the player's inventory and commits to SQLite.
+pub async fn give_sample_kit_to_connection(connection: &mut ZoneConnection, kind: &str) -> usize {
+    let catalog = connection_catalog(connection);
+    let items = catalog.sample_kit_item_ids(kind);
+    if items.is_empty() {
+        return 0;
+    }
+
+    let mut added = 0usize;
+    for item_id in items {
+        let new_item = {
+            let mut gd = connection.game_data.lock();
+            gd.get_item_info(ItemInfoQuery::ById(item_id))
+                .map(|info| Item::new(&info, 1))
+                .unwrap_or(Item {
+                    item_id,
+                    quantity: 1,
+                    ..Default::default()
+                })
+        };
+
+        let mut inserted = false;
+        for page_idx in 0..4 {
+            for slot_idx in 0..35u16 {
+                let ctype = match page_idx {
+                    0 => ContainerType::Inventory0,
+                    1 => ContainerType::Inventory1,
+                    2 => ContainerType::Inventory2,
+                    _ => ContainerType::Inventory3,
+                };
+                if let Some(slot) = connection.player_data.inventory.get_item(ctype, slot_idx)
+                    && slot.item_id == 0
+                {
+                    connection
+                        .player_data
+                        .inventory
+                        .add_in_slot(new_item, &ctype, slot_idx);
+                    inserted = true;
+                    added += 1;
+                    break;
+                }
+            }
+            if inserted {
+                break;
+            }
+        }
+    }
+
+    if added > 0 {
+        {
+            let mut db = connection.database.lock();
+            db.commit_classjob_and_inventory(&connection.player_data);
+        }
+        connection.send_inventory().await;
+    }
+
+    added
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CharaMake;
+    use crate::inventory::Inventory as PlayerInventory;
+    use physis::race::{Race, Tribe};
+    use physis::savedata::chardat::CustomizeData;
+
+    #[test]
+    fn unlock_characters_in_database_sets_debug_bitmasks_gil_gc_level_and_rescues_intro_zone() {
+        let Some(game_data) = crate::test_game_data() else {
+            return;
+        };
+        let mut db = WorldDatabase::new_in_memory();
+        let first_cid = db
+            .create_player_data(
+                1,
+                "FirstHero",
+                &CharaMake {
+                    customize: CustomizeData {
+                        race: Race::Hyur,
+                        tribe: Tribe::Highlander,
+                        ..Default::default()
+                    },
+                    classjob_id: 1,
+                    ..Default::default()
+                }
+                .to_json(),
+                1,
+                128,
+                PlayerInventory::default(),
+                game_data,
+            )
+            .0;
+        let second_cid = db
+            .create_player_data(
+                1,
+                "SecondHero",
+                &CharaMake {
+                    customize: CustomizeData {
+                        race: Race::Hyur,
+                        tribe: Tribe::Highlander,
+                        ..Default::default()
+                    },
+                    classjob_id: 1,
+                    ..Default::default()
+                }
+                .to_json(),
+                1,
+                181,
+                PlayerInventory::default(),
+                game_data,
+            )
+            .0;
+
+        let gd_mutex = parking_lot::Mutex::new(game_data.clone());
+        let names = unlock_characters_in_database(&mut db, Some(&gd_mutex), None)
+            .expect("unlock should succeed");
+        assert_eq!(names.len(), 2);
+
+        let second_row = db
+            .find_character(Some(second_cid), None)
+            .expect("second character must exist");
+        let second_pdata = db
+            .load_player_data_raw(second_row)
+            .expect("raw player data must load");
+        assert_eq!(second_pdata.character.gm_rank, GameMasterRank::Debug);
+        assert!(second_pdata.unlock.cutscene_seen.contains(2));
+        assert!(
+            second_pdata
+                .unlock
+                .orchestrion_rolls
+                .data
+                .iter()
+                .all(|b| *b == 0xFF)
+        );
+        assert!(second_pdata.unlock.unlocks.data.iter().all(|b| *b == 0xFF));
+        assert!(second_pdata.aetheryte.unlocked.contains(8));
+        assert_eq!(
+            second_pdata.grand_company.active_company,
+            IpcGrandCompany::Maelstrom
+        );
+        assert_eq!(second_pdata.grand_company.company_ranks.0, vec![11, 11, 11]);
+        assert_eq!(second_pdata.inventory.currency.gil.quantity, 99_999_999);
+        assert_eq!(second_pdata.volatile.zone_id, 128);
+        assert_eq!(second_pdata.volatile.position.0.y, 40.0);
+        let exp_idx = game_data
+            .get_exp_array_index(second_pdata.classjob.current_class as u16)
+            .unwrap();
+        assert_eq!(second_pdata.classjob.levels.0[exp_idx as usize], 100);
+
+        let first_row = db
+            .find_character(Some(first_cid), None)
+            .expect("first character must exist");
+        let first_pdata = db
+            .load_player_data_raw(first_row)
+            .expect("first raw player data must load");
+        assert_eq!(first_pdata.inventory.currency.gil.quantity, 99_999_999);
+    }
 }

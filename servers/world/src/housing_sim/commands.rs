@@ -6,7 +6,6 @@ use kawari::ipc::zone::{
 };
 
 use crate::ZoneConnection;
-use crate::inventory::Item;
 
 use super::db::{
     HousingEstateRow, MAX_ESTATE_GREETING_BYTES, MAX_ESTATE_NAME_BYTES, clamp_utf8,
@@ -18,9 +17,9 @@ use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
 use super::flows::{
     apply_preset_file_to_estate, build_selection_from_row, connection_catalog,
     ensure_local_apartment_estate, ensure_local_plot_estate, execute_housing_reload,
-    publish_session_snapshot, push_indoor_live_refresh, rebuild_house_inventory_from_db,
-    send_owned_housing, warp_into_estate_interior, warp_to_apartment_outdoor,
-    warp_to_estate_outdoor,
+    give_sample_kit_to_connection, publish_session_snapshot, push_indoor_live_refresh,
+    rebuild_house_inventory_from_db, send_owned_housing, unlock_online_connection,
+    warp_into_estate_interior, warp_to_apartment_outdoor, warp_to_estate_outdoor,
 };
 use super::gamedata_ext::{
     display_name_for_renovation, normalize_district_style_name, renovation_row_for_style_and_size,
@@ -75,6 +74,7 @@ pub async fn try_handle_housing_chat_command(
         "preset" => cmd_preset(connection, args).await,
         "export" => cmd_export(connection, args).await,
         "givekit" | "kit" => cmd_givekit(connection, args).await,
+        "unlockall" | "unlock" | "ready" => unlock_online_connection(connection).await,
         other => {
             connection
                 .send_notice(&format!(
@@ -138,7 +138,7 @@ async fn send_help(connection: &mut ZoneConnection) {
         "  !housing preset [check|latest|repeat] [all|interior|exterior] <path> [--reload=auto|live|zone|none]",
         "  !housing export [all|interior|exterior] [name] | !housing undo | !housing reset [all|interior|exterior]",
         "  !housing interior <1..21|style> | !housing light <0..5> | !housing name <text> | !housing greeting <text>",
-        "  !housing givekit <indoor|outdoor|npc>",
+        "  !housing givekit <indoor|outdoor|npc> | !housing unlockall",
     ] {
         connection.send_notice(line).await;
     }
@@ -1325,49 +1325,16 @@ async fn cmd_export(connection: &mut ZoneConnection, args: &[String]) {
 
 async fn cmd_givekit(connection: &mut ZoneConnection, args: &[String]) {
     let kind = args.first().map(|s| s.as_str()).unwrap_or("indoor");
-    let catalog = connection_catalog(connection);
-    let items = catalog.sample_kit_item_ids(kind);
-    if items.is_empty() {
+    let added = give_sample_kit_to_connection(connection, kind).await;
+    if added == 0 {
         connection
-            .send_notice("[Housing] Usage: !housing givekit <indoor|outdoor|npc>")
+            .send_notice(
+                "[Housing] Usage: !housing givekit <indoor|outdoor|npc> (or inventory full)",
+            )
             .await;
         return;
     }
 
-    let mut added = 0usize;
-    for item_id in items {
-        let mut inserted = false;
-        for page_idx in 0..4 {
-            for slot_idx in 0..35u16 {
-                let ctype = match page_idx {
-                    0 => kawari::common::ContainerType::Inventory0,
-                    1 => kawari::common::ContainerType::Inventory1,
-                    2 => kawari::common::ContainerType::Inventory2,
-                    _ => kawari::common::ContainerType::Inventory3,
-                };
-                if let Some(slot) = connection.player_data.inventory.get_item(ctype, slot_idx)
-                    && slot.item_id == 0
-                {
-                    connection.player_data.inventory.add_in_slot(
-                        Item {
-                            item_id,
-                            quantity: 1,
-                            ..Default::default()
-                        },
-                        &ctype,
-                        slot_idx,
-                    );
-                    inserted = true;
-                    added += 1;
-                    break;
-                }
-            }
-            if inserted {
-                break;
-            }
-        }
-    }
-    connection.send_inventory().await;
     connection
         .send_notice(&format!(
             "[Housing] Added {added} sample '{kind}' furnishings to inventory."
