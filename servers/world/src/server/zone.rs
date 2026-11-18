@@ -824,7 +824,7 @@ impl Zone {
     }
 }
 
-fn begin_change_zone<'a>(
+pub(crate) fn begin_change_zone<'a>(
     data: &'a mut WorldServer,
     network: &mut NetworkState,
     game_data: &mut GameData,
@@ -905,7 +905,7 @@ fn begin_change_zone<'a>(
 }
 
 /// Finds a random position from the pop range. Most have several positions available to stop people from spawning in the same place.
-fn pick_point_in_pop_range(object: &InstanceObject) -> Position {
+pub(crate) fn pick_point_in_pop_range(object: &InstanceObject) -> Position {
     let LayerEntryData::PopRange(pop_range) = &object.data else {
         return Position(glam::Vec3A::from_array(object.transform.translation));
     };
@@ -1082,7 +1082,7 @@ pub fn change_zone_to_player(
 }
 
 /// Sends the needed information to ZoneConnection for a zone change.
-fn do_change_zone(
+pub(crate) fn do_change_zone(
     network: &mut NetworkState,
     target_instance: &mut Instance,
     needs_init_zone: bool,
@@ -1135,6 +1135,11 @@ pub fn handle_zone_messages(
     lua: Arc<Mutex<KawariLua>>,
     msg: &ToServer,
 ) -> bool {
+    if crate::housing_sim::packets::handle_server_housing_message(
+        &data, &network, &game_data, &lua, msg,
+    ) {
+        return true;
+    }
     match msg {
         ToServer::ZoneLoaded(from_id, from_actor_id, player_spawn) => {
             tracing::info!(

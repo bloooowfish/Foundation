@@ -12,7 +12,7 @@ use kawari::constants::{CLASSJOB_ARRAY_SIZE, SHARED_FATES_SIZE};
 use serde_derive::{Deserialize, Serialize};
 pub use zone_connection::{ObsfucationData, PlayerData, ZoneConnection};
 
-mod database;
+pub(crate) mod database;
 pub use database::{Content, Unlock, WorldDatabase};
 
 pub mod lua;
@@ -23,7 +23,7 @@ pub use event::{Event, EventHandler};
 mod status_effects;
 pub use status_effects::StatusEffects;
 
-mod server;
+pub(crate) mod server;
 pub use server::{InstanceQuery, Party, server_main_loop};
 
 mod custom_ipc_connection;
@@ -39,6 +39,9 @@ pub mod auracite;
 
 /// Inventory and storage management.
 pub mod inventory;
+
+/// Self-contained Housing Simulator engine, ReMakePlace codec, and HTTP/SSE API.
+pub mod housing_sim;
 
 mod bitmask;
 pub use bitmask::{Bitmask, QuestBitmask};

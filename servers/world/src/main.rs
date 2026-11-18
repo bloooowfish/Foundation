@@ -38,6 +38,7 @@ use kawari::common::{CharacterMode, HouseId, HouseUnit, NETWORK_TIMEOUT, RECEIVE
 use kawari::constants::{AETHER_CURRENT_COMP_FLG_SET_BITMASK_SIZE, CLASSJOB_ARRAY_SIZE};
 use kawari::packet::oodle::OodleNetwork;
 use kawari::packet::{ConnectionState, ConnectionType, SegmentData, parse_packet_header};
+use kawari_world::housing_sim;
 use kawari_world::lua::{KawariLua, KawariLuaState, LuaPlayer};
 use kawari_world::{
     ChatConnection, CustomIpcConnection, Event, EventHandler, GameData, ObsfucationData, Roulette,
@@ -105,8 +106,17 @@ fn spawn_initial_setup(
     database: Arc<Mutex<WorldDatabase>>,
     game_data: Arc<Mutex<GameData>>,
     handle: ServerHandle,
+    housing_hub: Arc<housing_sim::HousingSimHub>,
 ) {
-    let _kill = tokio::spawn(initial_setup(id, socket, lua, database, game_data, handle));
+    let _kill = tokio::spawn(initial_setup(
+        id,
+        socket,
+        lua,
+        database,
+        game_data,
+        handle,
+        housing_hub,
+    ));
 }
 
 /// The initial setup loop, which figures out what the remote connection wants and branches off to provide a chat connection, zone connection, or custom IPC connection.
@@ -117,6 +127,7 @@ async fn initial_setup(
     database: Arc<Mutex<WorldDatabase>>,
     game_data: Arc<Mutex<GameData>>,
     handle: ServerHandle,
+    housing_hub: Arc<housing_sim::HousingSimHub>,
 ) {
     let mut buf = vec![0; RECEIVE_BUFFER_SIZE];
 
@@ -198,6 +209,8 @@ async fn initial_setup(
                     fate_motivation_npcs: HashMap::new(),
                     content_handler_id: None,
                     entering_subdivision: false,
+                    housing_sim: Default::default(),
+                    housing_hub: Some(housing_hub.clone()),
                 };
 
                 // Handle setup before passing off control to the zone connection.
@@ -570,6 +583,13 @@ async fn process_packet(
                     // Handled before our connection was spawned!
                 }
                 SegmentData::Ipc(data) => {
+                    if housing_sim::packets::try_handle_client_ipc(
+                        connection, lua_player, events, &data.data,
+                    )
+                    .await
+                    {
+                        continue;
+                    }
                     match &data.data {
                         ClientZoneIpcData::InitRequest { .. } => {
                             // IPC Init(?)
@@ -4547,6 +4567,9 @@ async fn process_server_msg(
                     .dice_roll_received(from_actor_id, from_actor_position, roll_data)
                     .await;
             }
+            FromServer::HousingSim(sim_msg) => {
+                housing_sim::packets::handle_from_server(connection, &sim_msg).await;
+            }
             _ => {
                 tracing::error!(
                     "ZoneConnection {:#?} received a FromServer message we don't care about: {:#?}, ensure you're using the right client network or that you've implemented a handler for it if we actually care about it!",
@@ -4601,6 +4624,11 @@ async fn client_loop(
             }
             msg = internal_recv.recv() => process_server_msg(&mut connection, &mut lua_player, &mut events, client_handle.clone(), msg).await,
         }
+    }
+
+    // Remove online simulator session before disconnecting.
+    if let Some(ref hub) = connection.housing_hub {
+        hub.remove_session(connection.id);
     }
 
     // forcefully log out the player if they weren't logging out but force D/C'd
@@ -4669,9 +4697,17 @@ async fn main() {
     }
 
     let (handle, _) = spawn_main_loop(game_data.clone(), database.clone());
+    let housing_hub = Arc::new(housing_sim::HousingSimHub::new(
+        handle.clone(),
+        database.clone(),
+        game_data.clone(),
+    ));
 
-    // This is a static healthcheck meant for the Kawari Toolbox plugin.
-    let app = Router::new().route("/healthcheck", get(root));
+    // Healthcheck + Housing Simulator REST/SSE control API.
+    let app = Router::new().route("/healthcheck", get(root)).nest(
+        "/api/v1/housing",
+        housing_sim::http::router(housing_hub.clone()),
+    );
 
     let mut healthcheck_addr = addr;
     healthcheck_addr.set_port(config.world.healthcheck_port);
@@ -4695,6 +4731,7 @@ async fn main() {
                 database.clone(),
                 game_data.clone(),
                 handle.clone(),
+                housing_hub.clone(),
             );
         }
     }

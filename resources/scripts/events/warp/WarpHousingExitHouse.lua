@@ -42,18 +42,10 @@ function onReturn(scene, results, player)
             [982] = 70,
         }
 
-        -- Finish the event and decide where to go
+        -- Finish the event and return to the estate front gate (or city aetheryte fallback)
         player:finish_event()
-        player:send_message("Due to housing being in extremely early stages, you will now be moved to the nearest city-state instead of the relevant ward.")
-
-        local destination = INTERIORS_TO_TOWN[player.zone.id]
-        if destination ~= nil then
-            player:warp_aetheryte(destination)
-            return
-        else
-            player:warp_aetheryte(2) -- Fallback to New Gridania if something went wrong
-            return
-        end
+        player:housing_exit_house()
+        return
     end
 
     player:finish_event()

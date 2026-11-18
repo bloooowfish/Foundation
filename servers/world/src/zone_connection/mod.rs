@@ -199,6 +199,10 @@ pub struct ZoneConnection {
     pub content_handler_id: Option<HandlerId>,
     /// Whether the player is teleporting to an aetheryte in a housing subdivision.
     pub entering_subdivision: bool,
+    /// Per-connection Housing Simulator session state.
+    pub housing_sim: crate::housing_sim::HousingSimSession,
+    /// Shared process-wide Housing Simulator coordinator handle.
+    pub housing_hub: Option<std::sync::Arc<crate::housing_sim::HousingSimHub>>,
 }
 
 impl ZoneConnection {
@@ -242,6 +246,7 @@ impl ZoneConnection {
     }
 
     pub async fn initialize(&mut self) {
+        crate::housing_sim::flows::normalize_indoor_login_location(self);
         self.player_data.item_sequence = 0;
         self.player_data.shop_sequence = 0;
 

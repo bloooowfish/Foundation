@@ -63,6 +63,10 @@ impl LuaPlayer {
         });
     }
 
+    fn housing_exit_house(&mut self) {
+        self.queued_tasks.push(LuaTask::HousingExitHouse);
+    }
+
     pub fn play_scene(&mut self, scene: u16, scene_flags: SceneFlags, params: Vec<u32>) {
         self.queued_tasks.push(LuaTask::PlayScene {
             scene,
@@ -1043,6 +1047,10 @@ impl UserData for LuaPlayer {
         );
         methods.add_method_mut("change_territory_house", |_, this, house_id: u32| {
             this.change_territory_house(house_id);
+            Ok(())
+        });
+        methods.add_method_mut("housing_exit_house", |_, this, _: ()| {
+            this.housing_exit_house();
             Ok(())
         });
     }

@@ -247,6 +247,8 @@ pub enum FromServer {
     ChatDiceRoll(ObjectId, ChatDiceRollResult),
     /// Inform the zone connection that someone (or their own player) in the vicinity sent a dice roll.
     ZoneDiceRoll(ObjectId, Position, ZoneDiceRollResult),
+    /// Housing simulator server->connection notifications.
+    HousingSim(crate::housing_sim::HousingSimFromServer),
 }
 
 #[derive(Debug, Clone)]
@@ -507,6 +509,8 @@ pub enum ToServer {
     ChangeWeather(ObjectId, u8),
     /// Warp to a house.
     WarpHouse(ClientId, ObjectId, u32),
+    /// Housing simulator overlay, warp, and broadcast messages.
+    HousingSim(crate::housing_sim::HousingSimToServer),
 }
 
 #[derive(Clone, Debug)]

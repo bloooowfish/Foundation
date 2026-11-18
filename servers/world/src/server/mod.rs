@@ -59,14 +59,14 @@ use kawari::{
 use super::{ClientId, FromServer, ToServer};
 
 mod action;
-mod actor;
+pub(crate) mod actor;
 mod chat;
 mod director;
 mod effect;
-mod instance;
+pub(crate) mod instance;
 pub use instance::InstanceQuery;
 mod linkshell;
-mod network;
+pub(crate) mod network;
 mod party;
 pub use party::{Party, PartyMember};
 mod fate;
@@ -74,10 +74,10 @@ mod npc_behavior;
 mod social;
 mod spawn_allocator;
 mod task;
-mod zone;
+pub(crate) mod zone;
 
 #[derive(Default, Debug, Clone)]
-struct ClientState {
+pub struct ClientState {
     actor_allocator: SpawnAllocator<MAX_SPAWNED_ACTORS, 1>, // Indices start at 1 because the player always takes the 0 index.
     object_allocator: SpawnAllocator<MAX_SPAWNED_OBJECTS>,
 }
@@ -90,7 +90,7 @@ impl ClientState {
 }
 
 #[derive(Default, Debug)]
-struct WorldServer {
+pub struct WorldServer {
     instances: Vec<Instance>,
     // TODO: Eventually remove these once we can reliably and ergonomically run misc. tasks on slower intervals!
     rested_exp_counter: i32,
@@ -162,14 +162,14 @@ impl WorldServer {
     }
 
     /// Finds the instance associated with an actor, or returns None if they are not found.
-    fn find_actor_instance(&self, actor_id: ObjectId) -> Option<&Instance> {
+    pub(crate) fn find_actor_instance(&self, actor_id: ObjectId) -> Option<&Instance> {
         self.instances
             .iter()
             .find(|instance| instance.actors.contains_key(&actor_id))
     }
 
     /// Finds the instance associated with an actor, or returns None if they are not found.
-    fn find_actor_instance_mut(&mut self, actor_id: ObjectId) -> Option<&mut Instance> {
+    pub(crate) fn find_actor_instance_mut(&mut self, actor_id: ObjectId) -> Option<&mut Instance> {
         self.instances
             .iter_mut()
             .find(|instance| instance.actors.contains_key(&actor_id))

@@ -63,6 +63,7 @@ async fn auto_config() -> String {
             lobby_server => config.lobby.server_name,
             lobby_port => config.lobby.port,
             frontier_server => config.frontier.server_name,
+            simulator_server => format!("http://{}:{}", config.world.server_name, config.world.healthcheck_port),
         })
         .unwrap()
 }

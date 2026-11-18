@@ -6,6 +6,7 @@
     "lobby_port": {{ lobby_port }},
     "lodestone_server": "",
     "frontier_server": "{{ frontier_server }}",
+    "simulator_server": "{{ simulator_server }}",
     "savedata_bank_server": "",
     "savedata_bank_port": "",
     "datacenter_travel_server": ""

@@ -824,13 +824,10 @@ impl ZoneConnection {
                         .await;
                 }
                 LuaTask::WarpHouse { house_id } => {
-                    self.handle
-                        .send(ToServer::WarpHouse(
-                            self.id,
-                            self.player_data.character.actor_id,
-                            *house_id,
-                        ))
-                        .await;
+                    crate::housing_sim::packets::handle_lua_warp_house(self, *house_id).await;
+                }
+                LuaTask::HousingExitHouse => {
+                    crate::housing_sim::packets::handle_lua_housing_exit(self).await;
                 }
             }
         }

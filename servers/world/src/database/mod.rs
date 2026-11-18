@@ -36,8 +36,24 @@ impl WorldDatabase {
             SqliteConnection::establish("world.db").expect("Failed to open database!");
 
         connection.run_pending_migrations(MIGRATIONS).unwrap();
+        crate::housing_sim::db::ensure_schema(&mut connection);
 
         Self { connection }
+    }
+
+    /// Opens an in-memory SQLite database with all embedded migrations applied for unit tests.
+    #[cfg(test)]
+    pub fn new_in_memory() -> Self {
+        let mut connection =
+            SqliteConnection::establish(":memory:").expect("Failed to open in-memory database!");
+        connection.run_pending_migrations(MIGRATIONS).unwrap();
+        crate::housing_sim::db::ensure_schema(&mut connection);
+        Self { connection }
+    }
+
+    /// Returns a mutable handle to the underlying SQLite connection for isolated domain modules.
+    pub fn connection_mut(&mut self) -> &mut SqliteConnection {
+        &mut self.connection
     }
 
     fn generate_content_id() -> u32 {

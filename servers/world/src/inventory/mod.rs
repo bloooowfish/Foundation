@@ -649,16 +649,15 @@ pub struct HousingInventory {
 
 impl HousingInventory {
     pub const INT_STORAGE_APT_FC: usize = 2;
-    pub const INT_STORAGE_SMALL: usize = 3;
-    pub const INT_STORAGE_MEDIUM: usize = 4;
-    pub const INT_STORAGE_MANSION: usize = 8;
+    pub const INT_STORAGE_SMALL: usize = 6;
+    pub const INT_STORAGE_MEDIUM: usize = 9;
+    pub const INT_STORAGE_MANSION: usize = 12;
 }
 
-// By default, be an apartment/fc chamber.
+// By default, support full 12 placed & storeroom pages (600 slots).
 impl Default for HousingInventory {
     fn default() -> Self {
         Self {
-            // plot_size: kawari::ipc::zone::PlotSize::Small,
             interior: vec![
                 GenericStorage::<MAX_LARGE_STORAGE>::new(
                     ContainerType::HousingInteriorPlacedItems1,
@@ -684,6 +683,18 @@ impl Default for HousingInventory {
                 GenericStorage::<MAX_LARGE_STORAGE>::new(
                     ContainerType::HousingInteriorPlacedItems8,
                 ),
+                GenericStorage::<MAX_LARGE_STORAGE>::new(
+                    ContainerType::HousingInteriorPlacedItems9,
+                ),
+                GenericStorage::<MAX_LARGE_STORAGE>::new(
+                    ContainerType::HousingInteriorPlacedItems10,
+                ),
+                GenericStorage::<MAX_LARGE_STORAGE>::new(
+                    ContainerType::HousingInteriorPlacedItems11,
+                ),
+                GenericStorage::<MAX_LARGE_STORAGE>::new(
+                    ContainerType::HousingInteriorPlacedItems12,
+                ),
             ],
             interior_storeroom: vec![
                 GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom1),
@@ -694,16 +705,20 @@ impl Default for HousingInventory {
                 GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom6),
                 GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom7),
                 GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom8),
+                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom9),
+                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom10),
+                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom11),
+                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom12),
             ],
             interior_appearance: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
-                ContainerType::HousingExteriorAppearance,
+                ContainerType::HousingInteriorAppearance,
             )],
 
             exterior: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
                 ContainerType::HousingExteriorPlacedItems,
             )],
             exterior_storeroom: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
-                ContainerType::HousingExteriorPlacedItems,
+                ContainerType::HousingExteriorStoreroom,
             )],
             exterior_appearance: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
                 ContainerType::HousingExteriorAppearance,
@@ -779,7 +794,10 @@ impl HousingInventory {
         }
     }
 
-    fn get_container_mut(&mut self, container_type: &ContainerType) -> Option<&mut dyn Storage> {
+    pub fn get_container_mut(
+        &mut self,
+        container_type: &ContainerType,
+    ) -> Option<&mut dyn Storage> {
         match container_type {
             ContainerType::HousingInteriorPlacedItems1 => Some(&mut self.interior[0]),
             ContainerType::HousingInteriorPlacedItems2 => Some(&mut self.interior[1]),
@@ -789,6 +807,10 @@ impl HousingInventory {
             ContainerType::HousingInteriorPlacedItems6 => Some(&mut self.interior[5]),
             ContainerType::HousingInteriorPlacedItems7 => Some(&mut self.interior[6]),
             ContainerType::HousingInteriorPlacedItems8 => Some(&mut self.interior[7]),
+            ContainerType::HousingInteriorPlacedItems9 => Some(&mut self.interior[8]),
+            ContainerType::HousingInteriorPlacedItems10 => Some(&mut self.interior[9]),
+            ContainerType::HousingInteriorPlacedItems11 => Some(&mut self.interior[10]),
+            ContainerType::HousingInteriorPlacedItems12 => Some(&mut self.interior[11]),
 
             ContainerType::HousingInteriorStoreroom1 => Some(&mut self.interior_storeroom[0]),
             ContainerType::HousingInteriorStoreroom2 => Some(&mut self.interior_storeroom[1]),
@@ -798,6 +820,10 @@ impl HousingInventory {
             ContainerType::HousingInteriorStoreroom6 => Some(&mut self.interior_storeroom[5]),
             ContainerType::HousingInteriorStoreroom7 => Some(&mut self.interior_storeroom[6]),
             ContainerType::HousingInteriorStoreroom8 => Some(&mut self.interior_storeroom[7]),
+            ContainerType::HousingInteriorStoreroom9 => Some(&mut self.interior_storeroom[8]),
+            ContainerType::HousingInteriorStoreroom10 => Some(&mut self.interior_storeroom[9]),
+            ContainerType::HousingInteriorStoreroom11 => Some(&mut self.interior_storeroom[10]),
+            ContainerType::HousingInteriorStoreroom12 => Some(&mut self.interior_storeroom[11]),
 
             ContainerType::HousingInteriorAppearance => Some(&mut self.interior_appearance[0]),
             ContainerType::HousingExteriorAppearance => Some(&mut self.exterior_appearance[0]),
@@ -818,6 +844,10 @@ impl HousingInventory {
             ContainerType::HousingInteriorPlacedItems6 => Some(&self.interior[5]),
             ContainerType::HousingInteriorPlacedItems7 => Some(&self.interior[6]),
             ContainerType::HousingInteriorPlacedItems8 => Some(&self.interior[7]),
+            ContainerType::HousingInteriorPlacedItems9 => Some(&self.interior[8]),
+            ContainerType::HousingInteriorPlacedItems10 => Some(&self.interior[9]),
+            ContainerType::HousingInteriorPlacedItems11 => Some(&self.interior[10]),
+            ContainerType::HousingInteriorPlacedItems12 => Some(&self.interior[11]),
 
             ContainerType::HousingInteriorStoreroom1 => Some(&self.interior_storeroom[0]),
             ContainerType::HousingInteriorStoreroom2 => Some(&self.interior_storeroom[1]),
@@ -827,6 +857,10 @@ impl HousingInventory {
             ContainerType::HousingInteriorStoreroom6 => Some(&self.interior_storeroom[5]),
             ContainerType::HousingInteriorStoreroom7 => Some(&self.interior_storeroom[6]),
             ContainerType::HousingInteriorStoreroom8 => Some(&self.interior_storeroom[7]),
+            ContainerType::HousingInteriorStoreroom9 => Some(&self.interior_storeroom[8]),
+            ContainerType::HousingInteriorStoreroom10 => Some(&self.interior_storeroom[9]),
+            ContainerType::HousingInteriorStoreroom11 => Some(&self.interior_storeroom[10]),
+            ContainerType::HousingInteriorStoreroom12 => Some(&self.interior_storeroom[11]),
 
             ContainerType::HousingInteriorAppearance => Some(&self.interior_appearance[0]),
             ContainerType::HousingExteriorAppearance => Some(&self.exterior_appearance[0]),

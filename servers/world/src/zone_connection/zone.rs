@@ -6,15 +6,14 @@ use crate::{
 };
 use kawari::{
     common::{
-        EstateType, FestivalId, HandlerId, HouseId, HouseUnit, HousingFlag, LandData, PlotState,
-        Position, TerritoryIntendedUse, WarpType, internal_housing_row, timestamp_secs,
+        EstateType, FestivalId, HandlerId, HousingFlag, PlotState, Position, TerritoryIntendedUse,
+        WarpType, internal_housing_row, timestamp_secs,
     },
     constants::OBFUSCATION_ENABLED_MODE,
     ipc::zone::{
-        ActorControlCategory, ApartmentBuildingState, Condition, DutyFinderSetting, Furniture,
-        FurnitureList, House, HouseList, ServerZoneIpcData, ServerZoneIpcSegment,
-        UpdateMapMarkersForWardDivision, WardDivision, WardDivisionInfo, WardMapInfo,
-        WardMapInfoFlags, ZoneInit, ZoneInitFlags,
+        ActorControlCategory, ApartmentBuildingState, Condition, DutyFinderSetting, FurnitureList,
+        House, HouseList, ServerZoneIpcData, ServerZoneIpcSegment, UpdateMapMarkersForWardDivision,
+        WardDivision, WardDivisionInfo, WardMapInfo, WardMapInfoFlags, ZoneInit, ZoneInitFlags,
     },
     packet::{ConnectionState, PacketSegment, ScramblerKeyGenerator, SegmentData, SegmentType},
 };
@@ -129,46 +128,8 @@ impl ZoneConnection {
         }))
         .await;
 
-        // Send owned housing list (unsure where this fits in before ZoneInit?!)
-        {
-            let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::OwnedHousing {
-                unk1: Default::default(),
-                unk2: LandData {
-                    id: HouseId {
-                        unit: HouseUnit {
-                            apartment_division_plot_index: 0,
-                            apartment_flag: false,
-                        },
-                        unk1: 0,
-                        ward_index: 0,
-                        room_number: 0,
-                        territory_type_id: 340,
-                        world_id: self.config.world_id,
-                    },
-                    flags: 3,
-                    unk1: 0,
-                },
-                unk3: Default::default(),
-                unk4: Default::default(),
-                unk5: Default::default(),
-                apartment: LandData {
-                    id: HouseId {
-                        unit: HouseUnit {
-                            apartment_division_plot_index: 0,
-                            apartment_flag: true,
-                        },
-                        unk1: 0,
-                        ward_index: 0,
-                        room_number: 1,
-                        territory_type_id: 340,
-                        world_id: self.config.world_id,
-                    },
-                    flags: 19,
-                    unk1: 0,
-                },
-            });
-            self.send_ipc_self(ipc).await;
-        }
+        // Send owned housing list from persistent Housing Simulator DB
+        crate::housing_sim::flows::send_owned_housing(self).await;
 
         // Send the list of available items if we're in an inn, since its only accessible via their beds.
         if lua_zone.intended_use == TerritoryIntendedUse::Inn {
@@ -301,47 +262,13 @@ impl ZoneConnection {
         if lua_zone.intended_use == TerritoryIntendedUse::HousingOutdoor
             && let InstanceQuery::Ward { ward } = lua_zone.query
         {
-            self.populate_ward(lua_zone.zone_id, ward).await;
+            crate::housing_sim::flows::init_outdoor_ward(self, lua_zone.zone_id, ward).await;
         }
 
         if lua_zone.intended_use == TerritoryIntendedUse::HousingIndoor
             && let InstanceQuery::House { house_id } = lua_zone.query
         {
-            // TODO: Reject doing anything if we entered an apartment lobby and somehow enter this code; those never have furniture and should be TerritoryIntendedUse::HousingIndoor too
-            let interior_details;
-            let mut interior_furniture;
-            {
-                let mut db = self.database.lock();
-                interior_details = db.find_house_interior_details(house_id);
-                interior_furniture = db.find_house_furniture(house_id, true, false);
-            }
-
-            self.send_ipc_self(ServerZoneIpcSegment::new(
-                ServerZoneIpcData::HousingInteriorDetails(interior_details.unwrap_or_default()),
-            ))
-            .await;
-
-            // TODO: Limit this by interior size soon...
-            for index in 0..6 {
-                let mut furniture: Vec<Furniture> = Vec::new();
-                // Take up to 100 items.
-                furniture.extend(
-                    interior_furniture
-                        .drain(0..std::cmp::min(interior_furniture.len(), Furniture::COUNT)),
-                );
-
-                self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
-                    FurnitureList {
-                        id: house_id,
-                        count: 6,
-                        index,
-                        estate_type: EstateType::ApartmentRoom,
-                        unk2: 100, // Indoors
-                        furniture,
-                    },
-                )))
-                .await;
-            }
+            crate::housing_sim::flows::init_indoor_estate(self, lua_zone.zone_id, house_id).await;
         }
 
         self.conditions

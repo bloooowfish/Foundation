@@ -233,4 +233,5 @@ pub enum LuaTask {
     WarpHouse {
         house_id: u32,
     },
+    HousingExitHouse,
 }
