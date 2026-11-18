@@ -1,5 +1,6 @@
 param(
     [switch]$Build,
+    [switch]$NoBuild,
     [switch]$Release,
     [switch]$Stop,
     [switch]$CheckOnly
@@ -28,6 +29,7 @@ function Stop-FoundationProcesses {
     foreach ($p in $procs) {
         try {
             Stop-Process -Id $p.Id -Force -ErrorAction Stop
+            try { $p.WaitForExit(3000) | Out-Null } catch {}
             if ($VerboseOutput) {
                 Write-Host "[Foundation] Stopped $($p.ProcessName) (PID $($p.Id))"
             }
@@ -91,16 +93,47 @@ $ProfileDir = Join-Path $RepoRoot (Join-Path "target" $ProfileName)
 $RunExe = Join-Path $ProfileDir "kawari-run.exe"
 $WorldExe = Join-Path $ProfileDir "kawari-world.exe"
 $LobbyExe = Join-Path $ProfileDir "kawari-lobby.exe"
-$NeedsOodleRebuild = (Test-Path -LiteralPath $WorldExe) -and (-not (Test-WorldHasOodle -ExePath $WorldExe))
+$NavimeshExe = Join-Path $ProfileDir "kawari-navimesh.exe"
 
-if ($Build -or -not (Test-Path -LiteralPath $RunExe) -or -not (Test-Path -LiteralPath $WorldExe) -or -not (Test-Path -LiteralPath $LobbyExe) -or $NeedsOodleRebuild) {
+$RepoOodleDir = Join-Path $RepoRoot "oodle"
+$RepoOodleDll = Join-Path $RepoOodleDir "oodle-network-shared.dll"
+$OodleDll = Join-Path $ProfileDir "oodle-network-shared.dll"
+$OodleCandidates = @(
+    $RepoOodleDll,
+    $OodleDll,
+    (Join-Path $RepoRoot "target\debug\oodle-network-shared.dll"),
+    (Join-Path $RepoRoot "target\release\oodle-network-shared.dll"),
+    (Join-Path $RepoRoot "..\Kawari-Fork\target\debug\oodle-network-shared.dll"),
+    (Join-Path $RepoRoot "..\Kawari-Fork\target\release\oodle-network-shared.dll")
+)
+$FoundOodleSource = $OodleCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $FoundOodleSource) {
+    Write-Host "[Foundation] Error: Missing oodle-network-shared.dll in $RepoOodleDir or $ProfileDir" -ForegroundColor Red
+    Write-Host "Place oodle-network-shared.dll in $RepoOodleDir or $ProfileDir"
+    exit 1
+}
+
+if (-not (Test-Path -LiteralPath $RepoOodleDll)) {
+    New-Item -ItemType Directory -Path $RepoOodleDir -Force | Out-Null
+    Copy-Item -LiteralPath $FoundOodleSource -Destination $RepoOodleDll -Force
+    Write-Host "[Foundation] Populated $RepoOodleDll from $FoundOodleSource"
+}
+
+$MissingBinaries = (-not (Test-Path -LiteralPath $RunExe)) -or (-not (Test-Path -LiteralPath $WorldExe)) -or (-not (Test-Path -LiteralPath $LobbyExe))
+$NeedsOodleRebuild = (Test-Path -LiteralPath $WorldExe) -and (-not (Test-WorldHasOodle -ExePath $WorldExe))
+$ShouldBuild = $Build -or $MissingBinaries -or $NeedsOodleRebuild -or ((-not $NoBuild) -and (-not $CheckOnly))
+
+if ($ShouldBuild) {
     if ($NeedsOodleRebuild -and -not $Build) {
         Write-Host "[Foundation] Detected kawari-world without Oodle feature; rebuilding with kawari/oodle..." -ForegroundColor Yellow
     }
     else {
         Write-Host "[Foundation] Building workspace (profile=$ProfileName, features=kawari/oodle)..." -ForegroundColor Cyan
     }
-    $cargoArgs = @("build", "--workspace", "--exclude", "kawari-navimesh", "--features", "kawari/oodle")
+    $cargoArgs = @("build", "--workspace", "--features", "kawari/oodle")
+    if (Test-Path -LiteralPath $NavimeshExe) {
+        $cargoArgs += @("--exclude", "kawari-navimesh")
+    }
     if ($Release) {
         $cargoArgs += "--release"
     }
@@ -111,23 +144,10 @@ if ($Build -or -not (Test-Path -LiteralPath $RunExe) -or -not (Test-Path -Litera
     }
 }
 
-$OodleDll = Join-Path $ProfileDir "oodle-network-shared.dll"
 if (-not (Test-Path -LiteralPath $OodleDll)) {
-    $Candidates = @(
-        (Join-Path $RepoRoot "oodle\oodle-network-shared.dll"),
-        (Join-Path $RepoRoot "..\Kawari-Fork\target\debug\oodle-network-shared.dll"),
-        (Join-Path $RepoRoot "..\Kawari-Fork\target\release\oodle-network-shared.dll")
-    )
-    $FoundSource = $Candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if ($FoundSource) {
-        Copy-Item -LiteralPath $FoundSource -Destination $OodleDll -Force
-        Write-Host "[Foundation] Copied oodle-network-shared.dll from $FoundSource"
-    }
-    else {
-        Write-Host "[Foundation] Error: Missing oodle-network-shared.dll in $ProfileDir" -ForegroundColor Red
-        Write-Host "Place oodle-network-shared.dll in $ProfileDir or $RepoRoot\oodle\"
-        exit 1
-    }
+    New-Item -ItemType Directory -Path $ProfileDir -Force | Out-Null
+    Copy-Item -LiteralPath $RepoOodleDll -Destination $OodleDll -Force
+    Write-Host "[Foundation] Copied oodle-network-shared.dll to $OodleDll"
 }
 
 if ($CheckOnly) {

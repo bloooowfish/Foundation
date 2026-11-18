@@ -816,12 +816,14 @@ async fn send_indoor_object_data_value_sets(
     connection: &mut ZoneConnection,
     placed_rows: &[HousingFurnitureRow],
 ) {
-    for value_set in build_housing_object_data_value_sets(placed_rows) {
-        connection
-            .send_ipc_self(ServerZoneIpcSegment::new(
-                ServerZoneIpcData::HousingObjectDataValueSet(value_set),
-            ))
-            .await;
+    let segments: Vec<ServerZoneIpcSegment> = build_housing_object_data_value_sets(placed_rows)
+        .into_iter()
+        .map(|value_set| {
+            ServerZoneIpcSegment::new(ServerZoneIpcData::HousingObjectDataValueSet(value_set))
+        })
+        .collect();
+    if !segments.is_empty() {
+        connection.send_ipcs_self(&segments).await;
     }
 }
 

@@ -37,7 +37,9 @@ use kawari::ipc::zone::{
 use kawari::common::{CharacterMode, HouseId, HouseUnit, NETWORK_TIMEOUT, RECEIVE_BUFFER_SIZE};
 use kawari::constants::{AETHER_CURRENT_COMP_FLG_SET_BITMASK_SIZE, CLASSJOB_ARRAY_SIZE};
 use kawari::packet::oodle::OodleNetwork;
-use kawari::packet::{ConnectionState, ConnectionType, SegmentData, parse_packet_header};
+use kawari::packet::{
+    ConnectionState, ConnectionType, PacketHeader, SegmentData, parse_packet_header,
+};
 use kawari_world::housing_sim;
 use kawari_world::lua::{KawariLua, KawariLuaState, LuaPlayer};
 use kawari_world::{
@@ -60,6 +62,108 @@ use tokio::task::JoinHandle;
 
 use kawari::common::INVENTORY_ACTION_ACK_GENERAL;
 use kawari::packet::PredefinedOpcode;
+
+fn drain_complete_client_packets(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let header_size = std::mem::size_of::<PacketHeader>();
+    let mut packets = Vec::new();
+
+    while pending.len() >= header_size {
+        let header = parse_packet_header(&pending[..header_size]);
+        let packet_size = header.size as usize;
+
+        if !(header_size..=RECEIVE_BUFFER_SIZE).contains(&packet_size) {
+            tracing::warn!(
+                pending_bytes = pending.len(),
+                packet_size,
+                "Discarding buffered client bytes with invalid packet size"
+            );
+            pending.clear();
+            break;
+        }
+
+        if pending.len() < packet_size {
+            break;
+        }
+
+        packets.push(pending[..packet_size].to_vec());
+        pending.drain(..packet_size);
+    }
+
+    packets
+}
+
+async fn read_first_client_packet(
+    socket: &mut TcpStream,
+    pending: &mut Vec<u8>,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let header_size = std::mem::size_of::<PacketHeader>();
+    let mut chunk = vec![0; RECEIVE_BUFFER_SIZE];
+
+    loop {
+        if pending.len() >= header_size {
+            let header = parse_packet_header(&pending[..header_size]);
+            let packet_size = header.size as usize;
+            if !(header_size..=RECEIVE_BUFFER_SIZE).contains(&packet_size) {
+                tracing::warn!(
+                    pending_bytes = pending.len(),
+                    packet_size,
+                    "Closing initial connection with invalid packet size"
+                );
+                pending.clear();
+                return Ok(None);
+            }
+            if pending.len() >= packet_size {
+                let first_packet = pending.drain(..packet_size).collect();
+                return Ok(Some(first_packet));
+            }
+        }
+
+        let n = socket.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        pending.extend_from_slice(&chunk[..n]);
+    }
+}
+
+#[cfg(test)]
+mod packet_stream_tests {
+    use super::*;
+
+    fn packet_bytes(payload_len: usize, fill: u8) -> Vec<u8> {
+        let header_size = std::mem::size_of::<PacketHeader>();
+        let packet_size = header_size + payload_len;
+        let mut bytes = vec![fill; packet_size];
+        bytes[..header_size].fill(0);
+        bytes[24..28].copy_from_slice(&(packet_size as u32).to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn drains_multiple_complete_packets_from_one_read_buffer() {
+        let first = packet_bytes(2, 0x11);
+        let second = packet_bytes(3, 0x22);
+        let mut pending = [first.clone(), second.clone()].concat();
+
+        let packets = drain_complete_client_packets(&mut pending);
+
+        assert_eq!(packets, vec![first, second]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn leaves_partial_packet_buffered_until_more_bytes_arrive() {
+        let complete = packet_bytes(2, 0x11);
+        let partial = packet_bytes(4, 0x22);
+        let partial_prefix = partial[..partial.len() - 1].to_vec();
+        let mut pending = [complete.clone(), partial_prefix.clone()].concat();
+
+        let packets = drain_complete_client_packets(&mut pending);
+
+        assert_eq!(packets, vec![complete]);
+        assert_eq!(pending, partial_prefix);
+    }
+}
 
 fn spawn_main_loop(
     game_data: Arc<Mutex<GameData>>,
@@ -129,11 +233,11 @@ async fn initial_setup(
     handle: ServerHandle,
     housing_hub: Arc<housing_sim::HousingSimHub>,
 ) {
-    let mut buf = vec![0; RECEIVE_BUFFER_SIZE];
+    let mut pending_client_bytes = Vec::with_capacity(RECEIVE_BUFFER_SIZE);
 
-    match socket.read(&mut buf).await {
-        Ok(n) => {
-            let header = parse_packet_header(&buf[..n]);
+    match read_first_client_packet(&mut socket, &mut pending_client_bytes).await {
+        Ok(Some(first_packet)) => {
+            let header = parse_packet_header(&first_packet);
             if header.connection_type == ConnectionType::KawariIpc {
                 let mut connection = CustomIpcConnection {
                     socket,
@@ -144,13 +248,19 @@ async fn initial_setup(
                     handle,
                 };
                 // Handle the first batch of segments before handing off control to the loop proper.
-                let segments = connection.parse_packet(&buf[..n]);
-                for segment in segments {
-                    match &segment.data {
-                        SegmentData::KawariIpc(data) => connection.handle_custom_ipc(data).await,
-                        _ => panic!(
-                            "initial_setup: The KawariIpc connection type only supports KawariIpc segments! Was a mistake made somewhere? Received: {segment:#?}"
-                        ),
+                let mut packets = vec![first_packet];
+                packets.extend(drain_complete_client_packets(&mut pending_client_bytes));
+                for packet in packets {
+                    let segments = connection.parse_packet(&packet);
+                    for segment in segments {
+                        match &segment.data {
+                            SegmentData::KawariIpc(data) => {
+                                connection.handle_custom_ipc(data).await
+                            }
+                            _ => panic!(
+                                "initial_setup: The KawariIpc connection type only supports KawariIpc segments! Was a mistake made somewhere? Received: {segment:#?}"
+                            ),
+                        }
                     }
                 }
 
@@ -214,7 +324,7 @@ async fn initial_setup(
                 };
 
                 // Handle setup before passing off control to the zone connection.
-                let segments = connection.parse_packet(&buf[..n]);
+                let segments = connection.parse_packet(&first_packet);
                 let mut zone_ready = false;
 
                 for segment in segments {
@@ -251,7 +361,7 @@ async fn initial_setup(
                 }
 
                 if zone_ready {
-                    spawn_client(connection);
+                    spawn_client(connection, pending_client_bytes);
                 }
             } else if header.connection_type == ConnectionType::Chat {
                 let state = ConnectionState::Zone {
@@ -273,7 +383,7 @@ async fn initial_setup(
                 };
 
                 // Handle setup before passing off control to the chat connection.
-                let segments = connection.parse_packet(&buf[..n]);
+                let segments = connection.parse_packet(&first_packet);
                 let mut chat_ready = false;
 
                 for segment in segments {
@@ -316,11 +426,14 @@ async fn initial_setup(
                     }
                 }
                 if chat_ready {
-                    spawn_chat_connection(connection);
+                    spawn_chat_connection(connection, pending_client_bytes);
                 }
             } else {
                 tracing::error!("Connection type is None! How did this happen?");
             }
+        }
+        Ok(None) => {
+            tracing::debug!("Closed initial connection {id:?} before setup completed");
         }
         Err(err) => {
             tracing::error!("Error while setting up connection: {err:?}");
@@ -333,16 +446,21 @@ struct ClientChatData {
     /// Socket for data recieved from the global server
     recv: Receiver<FromServer>,
     connection: ChatConnection,
+    pending_client_bytes: Vec<u8>,
 }
 
 /// Spawn a new chat connection for an incoming client.
-fn spawn_chat_connection(connection: ChatConnection) {
+fn spawn_chat_connection(connection: ChatConnection, pending_client_bytes: Vec<u8>) {
     let (send, recv) = channel(64);
 
     let id = &connection.id.clone();
     let actor_id = &connection.player_data.actor_id.clone();
 
-    let data = ClientChatData { recv, connection };
+    let data = ClientChatData {
+        recv,
+        connection,
+        pending_client_bytes,
+    };
 
     // Spawn a new client task
     let (my_send, my_recv) = oneshot::channel();
@@ -369,15 +487,73 @@ async fn start_chat_connection(my_handle: oneshot::Receiver<ClientHandle>, data:
 
     let connection = data.connection;
     let recv = data.recv;
+    let pending_client_bytes = data.pending_client_bytes;
 
     // communication channel between client_loop and client_server_loop
     let (internal_send, internal_recv) = unbounded_channel();
 
     let _ = join!(
-        tokio::spawn(client_chat_loop(connection, internal_recv, my_handle)),
+        tokio::spawn(client_chat_loop(
+            connection,
+            internal_recv,
+            my_handle,
+            pending_client_bytes
+        )),
         // TODO: It should be okay to reuse the zone connection's client_server_loop for ToServer & FromServer stuff since it gives us our own comms channel, right?
         tokio::spawn(client_server_loop(recv, internal_send))
     );
+}
+
+async fn handle_chat_packet(connection: &mut ChatConnection, packet: &[u8]) {
+    let segments = connection.parse_packet(packet);
+    for segment in segments {
+        match &segment.data {
+            SegmentData::None() => {}
+            SegmentData::Setup { .. } => {
+                // Handled before our connection was spawned!
+            }
+            SegmentData::Ipc(data) => match &data.data {
+                ClientChatIpcData::SendTellMessage(tell_data) => {
+                    connection.send_tell_message(tell_data).await;
+                }
+                ClientChatIpcData::SendPartyMessage(data) => {
+                    connection.send_party_message(data).await;
+                }
+                ClientChatIpcData::GetChannelList { unk } => {
+                    tracing::info!(
+                        "GetChannelList: {:#?} from {}",
+                        unk,
+                        connection.player_data.actor_id
+                    );
+                }
+                ClientChatIpcData::SendCWLinkshellMessage(data) => {
+                    connection.send_linkshell_message(data).await;
+                }
+                ClientChatIpcData::SendAllianceMessage(_data) => {
+                    tracing::info!("Chatting in alliances is unimplemented");
+                }
+                ClientChatIpcData::DiceRollCWLS(data) | ClientChatIpcData::DiceRollParty(data) => {
+                    connection.send_dice_roll(*data).await;
+                }
+                ClientChatIpcData::Unknown { unk } => {
+                    tracing::warn!(
+                        "Unknown chat packet {:?} recieved ({} bytes)",
+                        data.header.op_code,
+                        unk.len()
+                    );
+                }
+            },
+            SegmentData::KeepAliveRequest { id, timestamp } => {
+                connection.send_keep_alive(*id, *timestamp).await
+            }
+            SegmentData::KeepAliveResponse { .. } => {
+                // these should be safe to ignore
+            }
+            _ => panic!(
+                "ChatConnection: The server is receiving a response or an unknown packet: {segment:#?}"
+            ),
+        }
+    }
 }
 
 /// The client's chat connection loop, which allows them to communicate with other players in channels that span across the entire world.
@@ -385,12 +561,19 @@ async fn client_chat_loop(
     mut connection: ChatConnection,
     mut internal_recv: UnboundedReceiver<FromServer>,
     client_handle: ClientHandle,
+    mut pending_client_bytes: Vec<u8>,
 ) {
     // tell the server we exist, now that we confirmed we are a legitimate connection
     connection
         .handle
         .send(ToServer::NewChatClient(client_handle.clone()))
         .await;
+
+    pending_client_bytes
+        .reserve(RECEIVE_BUFFER_SIZE.saturating_sub(pending_client_bytes.capacity()));
+    for packet in drain_complete_client_packets(&mut pending_client_bytes) {
+        handle_chat_packet(&mut connection, &packet).await;
+    }
 
     let mut buf = vec![0; RECEIVE_BUFFER_SIZE];
     loop {
@@ -409,44 +592,9 @@ async fn client_chat_loop(
                             }
                         } else {
                             connection.last_keep_alive = Instant::now();
-                            let segments = connection.parse_packet(&buf);
-                            for segment in segments {
-                                match &segment.data {
-                                    SegmentData::None() => {}
-                                    SegmentData::Setup { .. } => {
-                                        // Handled before our connection was spawned!
-                                    }
-                                    SegmentData::Ipc(data) => {
-                                        match &data.data {
-                                            ClientChatIpcData::SendTellMessage(tell_data) => {
-                                                connection.send_tell_message(tell_data).await;
-                                            }
-                                            ClientChatIpcData::SendPartyMessage(data) => {
-                                                connection.send_party_message(data).await;
-                                            }
-                                            ClientChatIpcData::GetChannelList { unk } => {
-                                                tracing::info!("GetChannelList: {:#?} from {}", unk, connection.player_data.actor_id);
-                                            }
-                                            ClientChatIpcData::SendCWLinkshellMessage(data) => {
-                                                connection.send_linkshell_message(data).await;
-                                            }
-                                            ClientChatIpcData::SendAllianceMessage(_data) => {
-                                                tracing::info!("Chatting in alliances is unimplemented");
-                                            }
-                                            ClientChatIpcData::DiceRollCWLS(data) | ClientChatIpcData::DiceRollParty(data) => {
-                                                connection.send_dice_roll(*data).await;
-                                            }
-                                            ClientChatIpcData::Unknown { unk } => {
-                                                tracing::warn!("Unknown chat packet {:?} recieved ({} bytes)", data.header.op_code, unk.len());
-                                            }
-                                        }
-                                    }
-                                    SegmentData::KeepAliveRequest { id, timestamp } => connection.send_keep_alive(*id, *timestamp).await,
-                                    SegmentData::KeepAliveResponse { .. } => {
-                                        // these should be safe to ignore
-                                    }
-                                    _ => panic!("ChatConnection: The server is receiving a response or an unknown packet: {segment:#?}"),
-                                }
+                            pending_client_bytes.extend_from_slice(&buf[..n]);
+                            for packet in drain_complete_client_packets(&mut pending_client_bytes) {
+                                handle_chat_packet(&mut connection, &packet).await;
                             }
                         }
                     }
@@ -486,10 +634,11 @@ struct ClientZoneData {
     /// Socket for data recieved from the global server
     recv: Receiver<FromServer>,
     connection: ZoneConnection,
+    pending_client_bytes: Vec<u8>,
 }
 
 /// Spawn a new client actor.
-fn spawn_client(connection: ZoneConnection) {
+fn spawn_client(connection: ZoneConnection, pending_client_bytes: Vec<u8>) {
     let (send, recv) = channel(64);
 
     let id = &connection.id.clone();
@@ -497,7 +646,11 @@ fn spawn_client(connection: ZoneConnection) {
     let content_id = &connection.player_data.character.content_id.clone();
     let account_id = &connection.player_data.character.service_account_id.clone();
 
-    let data = ClientZoneData { recv, connection };
+    let data = ClientZoneData {
+        recv,
+        connection,
+        pending_client_bytes,
+    };
 
     // Spawn a new client task
     let (my_send, my_recv) = oneshot::channel();
@@ -523,12 +676,18 @@ async fn start_client(my_handle: oneshot::Receiver<ClientHandle>, data: ClientZo
 
     let connection = data.connection;
     let recv = data.recv;
+    let pending_client_bytes = data.pending_client_bytes;
 
     // communication channel between client_loop and client_server_loop
     let (internal_send, internal_recv) = unbounded_channel();
 
     let _ = join!(
-        tokio::spawn(client_loop(connection, internal_recv, my_handle)),
+        tokio::spawn(client_loop(
+            connection,
+            internal_recv,
+            my_handle,
+            pending_client_bytes
+        )),
         tokio::spawn(client_server_loop(recv, internal_send))
     );
 }
@@ -4608,10 +4767,13 @@ async fn client_loop(
     mut connection: ZoneConnection,
     mut internal_recv: UnboundedReceiver<FromServer>,
     client_handle: ClientHandle,
+    mut pending_client_bytes: Vec<u8>,
 ) {
     let mut lua_player = LuaPlayer::default();
 
     let mut buf = vec![0; RECEIVE_BUFFER_SIZE];
+    pending_client_bytes
+        .reserve(RECEIVE_BUFFER_SIZE.saturating_sub(pending_client_bytes.capacity()));
     let mut client_handle = client_handle.clone();
     client_handle.actor_id = connection.player_data.character.actor_id;
 
@@ -4629,16 +4791,42 @@ async fn client_loop(
     // Of course, Rust's mutability rules disallow that.
     let mut events: Vec<(Box<dyn EventHandler>, Event)> = Vec::new();
 
-    loop {
+    let mut disconnect = false;
+    for packet in drain_complete_client_packets(&mut pending_client_bytes) {
+        if !process_packet(
+            &mut connection,
+            &mut lua_player,
+            &mut events,
+            client_handle.clone(),
+            packet.len(),
+            &packet,
+        )
+        .await
+        {
+            disconnect = true;
+            break;
+        }
+    }
+
+    while !disconnect {
         tokio::select! {
             biased; // client data should always be prioritized
             n = connection.socket.read(&mut buf) => {
                 match n {
-                    Ok(n) => {
-                        if !process_packet(&mut connection, &mut lua_player, &mut events, client_handle.clone(), n, &buf).await {
+                    Ok(0) => {
+                        if !process_packet(&mut connection, &mut lua_player, &mut events, client_handle.clone(), 0, &[]).await {
                             break;
                         }
-                    },
+                    }
+                    Ok(n) => {
+                        pending_client_bytes.extend_from_slice(&buf[..n]);
+                        for packet in drain_complete_client_packets(&mut pending_client_bytes) {
+                            if !process_packet(&mut connection, &mut lua_player, &mut events, client_handle.clone(), packet.len(), &packet).await {
+                                disconnect = true;
+                                break;
+                            }
+                        }
+                    }
                     Err(_) => {
                         tracing::info!("ZoneConnection {:#?} was killed because of a network error!", client_handle.id);
                         break;

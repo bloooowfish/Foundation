@@ -39,9 +39,9 @@ async fn main() {
     if let Ok(cargo) = std::env::var("CARGO") {
         let build_exit_status = Command::new(cargo)
             .args(if cfg!(debug_assertions) {
-                vec!["build", "--features", "oodle"]
+                vec!["build", "--features", "kawari/oodle"]
             } else {
-                vec!["build", "--release", "--features", "oodle"]
+                vec!["build", "--release", "--features", "kawari/oodle"]
             })
             .stdout(Stdio::inherit())
             .spawn()
