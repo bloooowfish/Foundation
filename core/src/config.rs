@@ -616,6 +616,38 @@ impl TweaksConfig {
     }
 }
 
+/// Runtime protocol & patch-resilience configuration.
+#[derive(Serialize, Deserialize)]
+pub struct ProtocolConfig {
+    /// Optional explicit path to a YAML opcode/version override profile.
+    #[serde(default)]
+    pub profile_path: String,
+
+    /// Automatically read `.ver` files and scan `LOBBY_GAME_VERSION` from `filesystem.game_path`.
+    #[serde(default = "ProtocolConfig::default_true")]
+    pub auto_detect_client_version: bool,
+
+    /// Automatically extract `ZoneDown` vtable opcodes from `ffxiv_dx11.exe` when baseline matches.
+    #[serde(default = "ProtocolConfig::default_true")]
+    pub auto_extract_zonedown_opcodes: bool,
+}
+
+impl Default for ProtocolConfig {
+    fn default() -> Self {
+        Self {
+            profile_path: String::new(),
+            auto_detect_client_version: true,
+            auto_extract_zonedown_opcodes: true,
+        }
+    }
+}
+
+impl ProtocolConfig {
+    fn default_true() -> bool {
+        true
+    }
+}
+
 /// Global and all-encompassing config.
 /// Settings that affect all servers belong here.
 #[derive(Serialize, Deserialize, Default)]
@@ -646,6 +678,9 @@ pub struct Config {
 
     #[serde(default)]
     pub tweaks: TweaksConfig,
+
+    #[serde(default)]
+    pub protocol: ProtocolConfig,
 }
 
 pub fn get_config() -> Config {

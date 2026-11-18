@@ -10,9 +10,9 @@ use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, Expiration};
 use kawari::common::{ACCOUNT_MANAGEMENT_SERVICE, GAME_SERVICE};
 use kawari::config::get_config;
-use kawari::constants::SUPPORTED_GAME_VERSION;
 use kawari::ipc::kawari::{CustomIpcData, CustomIpcSegment};
 use kawari::packet::send_custom_world_packet;
+use kawari::protocol_profile::{active_supported_game_version, init_runtime_protocol};
 use kawari::web_static_dir;
 use kawari_login::{LoginDatabase, LoginError};
 use minijinja::value::Serde;
@@ -455,7 +455,7 @@ async fn login_history_with_sid(
                     login_server => config.login.server_name.clone(),
                     lobby_port => config.lobby.port,
                     lobby_host => config.lobby.server_name,
-                    game_version => SUPPORTED_GAME_VERSION,
+                    game_version => active_supported_game_version(),
                     frontier_host => config.frontier.server_name,
                     login_host => config.login.server_name,
                     server_url => config.web.server_name,
@@ -536,6 +536,7 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let config = get_config();
+    init_runtime_protocol(&config);
 
     let sqpack_resource = SqPackResource::from_existing(&config.filesystem.game_path());
     let num_expansions = sqpack_resource.repositories.len() - 1; // Base game is always one

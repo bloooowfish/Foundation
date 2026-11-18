@@ -14,6 +14,7 @@ members = [
 
     # Tools
     "tools/navimesh",
+    "tools/patch-sync",
     "tools/run",
 ]
 resolver = "3"

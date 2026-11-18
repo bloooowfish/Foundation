@@ -28,3 +28,6 @@ pub use search_info::*;
 
 mod waymark;
 pub use waymark::*;
+
+pub mod housing_ext;
+pub use housing_ext::*;

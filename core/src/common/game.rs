@@ -680,6 +680,10 @@ pub enum ContainerType {
     HousingInteriorPlacedItems6 = 25008,
     HousingInteriorPlacedItems7 = 25009,
     HousingInteriorPlacedItems8 = 25010,
+    HousingInteriorPlacedItems9 = 25011,
+    HousingInteriorPlacedItems10 = 25012,
+    HousingInteriorPlacedItems11 = 25013,
+    HousingInteriorPlacedItems12 = 25014,
 
     HousingExteriorStoreroom = 27000,
     HousingInteriorStoreroom1 = 27001,
@@ -690,6 +694,10 @@ pub enum ContainerType {
     HousingInteriorStoreroom6 = 27006,
     HousingInteriorStoreroom7 = 27007,
     HousingInteriorStoreroom8 = 27008,
+    HousingInteriorStoreroom9 = 27009,
+    HousingInteriorStoreroom10 = 27010,
+    HousingInteriorStoreroom11 = 27011,
+    HousingInteriorStoreroom12 = 27012,
 
     DiscardingItemSentinel = 65535,
 }
@@ -719,50 +727,106 @@ impl ContainerType {
     }
 }
 
-#[binrw]
-#[derive(Debug, Clone, Default, Copy, PartialEq, FromRepr)]
-#[brw(repr = u32)]
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, FromRepr)]
 #[repr(u32)]
 pub enum ItemOperationKind {
     /// The operation opcode/type when the server wants the client to create a storage. Seen during login to create the HandIn storage.
-    CreateStorage = ClientZoneIpcType::get_opcode(&ClientZoneIpcType::ItemOperation) as u32 + 1,
+    CreateStorage = 1,
     /// Dummy placeholder.
-    Unk1,
+    Unk1 = 2,
     /// Dummy placeholder.
-    Unk2,
+    Unk2 = 3,
     /// Dummy placeholder.
-    Unk3,
+    Unk3 = 4,
     /// The operation opcode/type when an item is created in the inventory. Seen during currency shop transactions, and likely elsewhere.
-    Create,
+    Create = 5,
     /// The operation opcode/type when updating the inventory. Seen during all shop transactions when updating currency, and elsewhere.
-    Update,
+    Update = 6,
     /// The operation opcode/type when discarding an item from the inventory. Seen when discarding an item from the inventory, and during gilshop sell transactions.
-    Discard,
+    Discard = 7,
     #[default]
     /// The operation opcode/type when moving an item to an emtpy slot in the inventory.
-    Move,
+    Move = 8,
     /// The operation opcode/type when moving an item to a slot occupied by another in the inventory.
-    Exchange,
+    Exchange = 9,
     /// The operation opcode/type when splitting stacks of identical items.
-    SplitStack,
+    SplitStack = 10,
     /// Seen during trading. TODO: probably wrong
-    UnkTrading1,
+    UnkTrading1 = 11,
     /// The operation opcode/type when combining stacks of identical items.
-    CombineStack,
-    Unk5,
-    Unk6,
-    Unk7,
-    Unk8,
-    Unk9,
-    Unk10,
+    CombineStack = 12,
+    Unk5 = 13,
+    Unk6 = 14,
+    Unk7 = 15,
+    Unk8 = 16,
+    Unk9 = 17,
+    Unk10 = 18,
     /// The operation opcode/type when the server wants the client to equip the mannequin (character sheet/try on preview model?). Seen during login and probably elsewhere.
-    EquipMannequin,
+    EquipMannequin = 19,
     /// Seen while discarding. TODO: probably wrong
     UnkDiscard = 0x90,
     /// Seen during trading. TODO: probably wrong
     UnkTrading2 = 256,
     /// Seen while equipping gearsets. TODO: probably wrong
     UnkGearSetEquipped = 567,
+}
+
+impl ItemOperationKind {
+    /// Converts this operation kind to its wire u32 value relative to runtime `ClientZoneIpcType::ItemOperation`.
+    pub fn to_wire(self) -> u32 {
+        match self {
+            Self::UnkDiscard | Self::UnkTrading2 | Self::UnkGearSetEquipped => self as u32,
+            other => ClientZoneIpcType::ItemOperation.get_opcode() as u32 + (other as u32),
+        }
+    }
+
+    /// Parses a wire u32 value relative to runtime `ClientZoneIpcType::ItemOperation`.
+    pub fn from_wire(raw: u32) -> Option<Self> {
+        let base = ClientZoneIpcType::ItemOperation.get_opcode() as u32;
+        if let Some(rel) = raw.checked_sub(base)
+            && (1..=19).contains(&rel)
+            && let Some(kind) = Self::from_repr(rel)
+        {
+            return Some(kind);
+        }
+
+        match raw {
+            0x90 => Some(Self::UnkDiscard),
+            256 => Some(Self::UnkTrading2),
+            567 => Some(Self::UnkGearSetEquipped),
+            _ => None,
+        }
+    }
+}
+
+impl BinRead for ItemOperationKind {
+    type Args<'a> = ();
+
+    fn read_options<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        endian: binrw::Endian,
+        args: Self::Args<'_>,
+    ) -> binrw::BinResult<Self> {
+        let pos = reader.stream_position()?;
+        let raw = u32::read_options(reader, endian, args)?;
+        Self::from_wire(raw).ok_or_else(|| binrw::Error::AssertFail {
+            pos,
+            message: format!("Unknown ItemOperationKind wire value {raw}"),
+        })
+    }
+}
+
+impl BinWrite for ItemOperationKind {
+    type Args<'a> = ();
+
+    fn write_options<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: &mut W,
+        endian: binrw::Endian,
+        args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        self.to_wire().write_options(writer, endian, args)
+    }
 }
 
 /// Useful pre-defined log messages. Feel free to add any ones we need. Index into the LogMessage Excel sheet.

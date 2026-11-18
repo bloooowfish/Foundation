@@ -32,8 +32,8 @@ pub struct FurnitureList {
 pub struct HousingInteriorDetails {
     /// This interior's window style.
     pub window_style: u16,
-    /// Seems to only be affected by all-in-one exterior sets. In interiors, it has no noticeable visual effect. Perhaps a deprecated or abandoned field.
-    #[serde(default, skip_serializing)]
+    /// Exterior/interior window dye index into Stain sheet (also serialized for interior window customization).
+    #[serde(default)]
     pub exterior_window_dye: u16, // From worstaquaplayer: v10.ExteriorStains[1] = a2->field_2;
     /// This interior's door style.
     pub door_style: u16,
@@ -108,7 +108,25 @@ pub struct FurnitureTranslatedForObserver {
     pub unk2: [u8; 4], // Likely just padding, observed as zeroes
 }
 
+impl HousingInteriorDetails {
+    pub const fn window_stain(&self) -> u8 {
+        (self.exterior_window_dye & 0xFF) as u8
+    }
+
+    pub fn set_window_stain(&mut self, stain: u8) {
+        self.exterior_window_dye = stain as u16;
+    }
+}
+
 impl Furniture {
     pub const SIZE: usize = 24;
     pub const COUNT: usize = 100;
+
+    pub const fn material_item_key(&self) -> u16 {
+        self.id2 as u16
+    }
+
+    pub fn set_material_item_key(&mut self, key: u16) {
+        self.id2 = key as i16;
+    }
 }

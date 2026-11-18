@@ -869,6 +869,26 @@ pub enum ActorControlCategory {
         unlocked: bool,
     },
 
+    /// The server opens or closes the generic estate remodel menu (`mode`).
+    #[brw(magic = 1001u32)]
+    ShowEstateRemodelMenu { plot_index: u32, mode: u32 },
+
+    /// The server displays the Exterior Remodeling window for the client.
+    #[brw(magic = 1002u32)]
+    ShowEstateExternalAppearanceUI { plot_index: u32 },
+
+    /// The server displays the Edit Interior material window for the client.
+    #[brw(magic = 1003u32)]
+    ShowEstateInternalAppearanceUI {},
+
+    /// The server acknowledges that an estate appearance remodeling session has ended.
+    #[brw(magic = 1005u32)]
+    FinishEstateAppearanceRemodel {},
+
+    /// The server acknowledges that an estate appearance item operation was applied.
+    #[brw(magic = 1008u32)]
+    FinishEstateAppearanceItemOperation {},
+
     /// The server acknowledges the client's request to remove an item from the world and put it back into their inventory. Doesn't seem to have any values, but we should keep unknowns for now, just in case...
     #[brw(magic = 1009u32)]
     FurnitureRemovedToInventoryAck {
@@ -876,6 +896,14 @@ pub enum ActorControlCategory {
         unk2: u32,
         unk3: u32,
         unk4: u32,
+    },
+
+    /// The server confirms the active housing interior/plot/workshop identity.
+    #[brw(magic = 1010u32)]
+    HousingInteriorReady {
+        primary_id: u64,
+        secondary_id: u64,
+        unk1: u32,
     },
 
     /// The server acknowledges the client's request to place an item. Doesn't seem to have any values, but we should keep unknowns for now, just in case...
@@ -902,24 +930,65 @@ pub enum ActorControlCategory {
         slot: u32,
     },
 
+    /// Hides the free company private chambers door in a personal housing interior.
+    #[brw(magic = 1024u32)]
+    HideAdditionalChambersDoor {},
+
     /// The server sets the interior lighting level for an observing client.
     #[brw(magic = 1034u32)]
     InteriorLightLevelForObserver {
         /// The light level set by the resident.
         level: u32,
-        /// Same unk from the resident's client trigger. It's always 1.
+        /// Enable SSAO (`param2`, `0` or `1`).
         unk1: u32,
     },
 
     /// The server sets the interior lighting level for the client.
     #[brw(magic = 1035u32)]
     InteriorLightLevel {
+        /// Silent init flag (`1` skips chat log messages on setup).
         unk1: u32,
         /// The light level set by the client.
         level: u32,
-        /// This repeats the client trigger's unk back to them. It's always 1.
+        /// Enable SSAO (`param3`, `0` or `1`).
         unk2: u32,
     },
+
+    /// Finalizes an empty indoor `FurnitureManager` without needing placeholder furniture slots.
+    #[brw(magic = 1048u32)]
+    HousingInteriorFinalizeEmpty {
+        house_id_low: u32,
+        house_id_high: u32,
+        estate_type: u32,
+    },
+
+    /// The server populates the Interior Design renovation pattern window (`AgentHousingInteriorPattern`, id `462`).
+    #[brw(magic = 1059u32)]
+    ShowEstateInteriorPatternUI {
+        #[br(map = read_bool_from::<u32>)]
+        #[bw(map = write_bool_as::<u32>)]
+        enabled: bool,
+        /// Row id on the HousingRenovation sheet.
+        current_renovation_row_id: u32,
+        /// Current HousingIndoorTerritory size (`0/1/2` for small/medium/large).
+        current_size: u32,
+        /// Echoed by the client when applying the selected renovation.
+        remodel_mode: u32,
+        /// Extra allowed-size bitmask.
+        allowed_size_mask: u32,
+    },
+
+    /// The server closes or finishes the Interior Design renovation pattern flow.
+    #[brw(magic = 1060u32)]
+    FinishEstateInteriorPattern {
+        #[br(map = read_bool_from::<u32>)]
+        #[bw(map = write_bool_as::<u32>)]
+        enabled: bool,
+    },
+
+    /// Step acknowledgement for Interior Design renovation pattern application.
+    #[brw(magic = 1061u32)]
+    EstateInteriorPatternStepAck { mode: u32, result: u32 },
 
     #[brw(magic = 1204u32)]
     ToggleTripleTriadCardUnlock {

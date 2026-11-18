@@ -3949,6 +3949,20 @@ async fn process_packet(
 
                             connection.send_ipc_self(ipc).await;
                         }
+                        ClientZoneIpcData::InteriorRemodelItemOperation(_)
+                        | ClientZoneIpcData::ExteriorRemodelItemOperation(_)
+                        | ClientZoneIpcData::BatchTranslateIndoorFurniture(_)
+                        | ClientZoneIpcData::UpdateEstateName(_)
+                        | ClientZoneIpcData::UpdateEstateGreeting(_)
+                        | ClientZoneIpcData::UpdateEstateProfile(_)
+                        | ClientZoneIpcData::BuildEstateDeed(_)
+                        | ClientZoneIpcData::UpdateAquarium(_)
+                        | ClientZoneIpcData::UpdateOrchestrionPlaylist(_) => {
+                            tracing::debug!(
+                                "Received housing extension packet {:?} (handler deferred to Milestone 2)",
+                                data.header.op_code
+                            );
+                        }
                         ClientZoneIpcData::Unknown { unk } => {
                             tracing::warn!(
                                 "Unknown Zone packet {:?} recieved ({} bytes)",
@@ -4630,6 +4644,7 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let config = get_config();
+    kawari::protocol_profile::init_runtime_protocol(&config);
 
     let addr = config.world.get_socketaddr();
 

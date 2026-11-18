@@ -1,0 +1,976 @@
+game_version: 2026.11.03.0000.0000
+boot_version: 2026.08.18.0000.0001
+expansion_versions:
+- 2026.10.29.0000.0000
+- 2026.10.29.0000.0000
+- 2026.11.03.0000.0000
+- 2026.11.03.0000.0000
+- 2026.11.03.0000.0000
+lobby_game_version: 7500
+ServerZoneIpcType:
+  AcceptQuest:
+    opcode: 665
+    size: 8
+  ActionEffect1:
+    opcode: 400
+    size: 124
+  ActorCast:
+    opcode: 352
+    size: 32
+  ActorControl:
+    opcode: 735
+    size: 24
+  ActorControlSelf:
+    opcode: 169
+    size: 40
+  ActorControlTarget:
+    opcode: 256
+    size: 32
+  ActorGauge:
+    opcode: 803
+    size: 16
+  ActorMove:
+    opcode: 174
+    size: 16
+  ActorSetPos:
+    opcode: 934
+    size: 24
+  AdventurerPlate:
+    opcode: 371
+    size: 480
+  AoeEffect8:
+    opcode: 563
+    size: 636
+  ApartmentList:
+    opcode: 775
+    size: 1584
+  BatchIndoorFurnitureSlotUpdate:
+    opcode: 590
+    size: 32
+  BatchIndoorFurnitureTranslated:
+    opcode: 970
+    size: 208
+  BeginStrategyBoardSession:
+    opcode: 818
+    size: 16
+  Blacklist:
+    opcode: 142
+    size: 968
+  CWLinkshellNameAvailability:
+    opcode: 470
+    size: 40
+  CharaInfoFromContentIds:
+    opcode: 965
+    size: 568
+  ChatMessage:
+    opcode: 496
+    size: 1080
+  Condition:
+    opcode: 122
+    size: 16
+  Config:
+    opcode: 188
+    size: 8
+  ContainerInfo:
+    opcode: 408
+    size: 16
+  ContentFinderCommencing:
+    opcode: 715
+    size: 24
+  ContentFinderFound:
+    opcode: 959
+    size: 40
+  ContentFinderUpdate:
+    opcode: 367
+    size: 40
+  Countdown:
+    opcode: 604
+    size: 64
+  CraftingLog:
+    opcode: 419
+    size: 808
+  CrossRealmListingInformation:
+    opcode: 574
+    size: 464
+  CrossRealmListings:
+    opcode: 537
+    size: 1616
+  CrossRealmListingsOverview:
+    opcode: 340
+    size: 48
+  CrossworldLinkshellDisbanded:
+    opcode: 966
+    size: 40
+  CrossworldLinkshellInvite:
+    opcode: 736
+    size: 128
+  CrossworldLinkshellJoined2:
+    opcode: 385
+    size: 56
+  CrossworldLinkshellJoinedSelf:
+    opcode: 106
+    size: 48
+  CrossworldLinkshellMemberLeft:
+    opcode: 320
+    size: 64
+  CrossworldLinkshellMemberList:
+    opcode: 196
+    size: 464
+  CrossworldLinkshellMemberRank:
+    opcode: 531
+    size: 64
+  CrossworldLinkshellRenamed:
+    opcode: 711
+    size: 88
+  CrossworldLinkshells:
+    opcode: 799
+    size: 456
+  CrossworldLinkshellsEx:
+    opcode: 626
+    size: 520
+  CurrencyCrystalInfo:
+    opcode: 748
+    size: 24
+  DailyQuestRepeatFlags:
+    opcode: 964
+    size: 8
+  DailyQuests:
+    opcode: 889
+    size: 56
+  DeepDungeonChests:
+    opcode: 456
+    size: 32
+  DeepDungeonMap:
+    opcode: 508
+    size: 56
+  DeepDungeonParty:
+    opcode: 974
+    size: 20
+  DeepDungeonSetup:
+    opcode: 906
+    size: 24
+  DeleteActor:
+    opcode: 442
+    size: 8
+  DeleteObject:
+    opcode: 267
+    size: 8
+  DirectorMapEffect:
+    opcode: 151
+    size: 16
+  DirectorPopupMessage:
+    opcode: 236
+    size: 40
+  DirectorSetupMapEffects128:
+    opcode: 433
+    size: 264
+  DirectorSetupMapEffects64:
+    opcode: 197
+    size: 136
+  DirectorVars:
+    opcode: 541
+    size: 24
+  DuelInformation:
+    opcode: 515
+    size: 64
+  DutySupportInformation:
+    opcode: 804
+    size: 80
+  EffectResult:
+    opcode: 659
+    size: 96
+  EffectResultBasic:
+    opcode: 586
+    size: 24
+  EndStrategyBoardSession:
+    opcode: 112
+    size: 16
+  EnmityList:
+    opcode: 730
+    size: 72
+  EorzeanTimeOffset:
+    opcode: 418
+    size: 8
+  Equip:
+    opcode: 370
+    size: 72
+  EventFinish:
+    opcode: 182
+    size: 16
+  EventLogMessage2:
+    opcode: 478
+    size: 24
+  EventLogMessage4:
+    opcode: 466
+    size: 32
+  EventResume2:
+    opcode: 511
+    size: 16
+  EventResume4:
+    opcode: 132
+    size: 24
+  EventResume8:
+    opcode: 603
+    size: 40
+  EventScene128:
+    opcode: 703
+    size: 544
+  EventScene16:
+    opcode: 109
+    size: 96
+  EventScene2:
+    opcode: 523
+    size: 40
+  EventScene255:
+    opcode: 485
+    size: 1052
+  EventScene32:
+    opcode: 114
+    size: 160
+  EventScene4:
+    opcode: 264
+    size: 48
+  EventScene64:
+    opcode: 836
+    size: 288
+  EventScene8:
+    opcode: 561
+    size: 64
+  EventStart:
+    opcode: 927
+    size: 24
+  ExamineCharacterInformation:
+    opcode: 649
+    size: 944
+  ExteriorFurniturePlaced:
+    opcode: 183
+    size: 32
+  Fellowships:
+    opcode: 962
+    size: 808
+  FieldMarkerPreset:
+    opcode: 375
+    size: 104
+  FinishQuest:
+    opcode: 675
+    size: 8
+  FirstAttack:
+    opcode: 739
+    size: 16
+  FreeCompanyActivityList:
+    opcode: 882
+    size: 528
+  FreeCompanyGreeting:
+    opcode: 646
+    size: 200
+  FreeCompanyHeader:
+    opcode: 565
+    size: 80
+  FreeCompanyHierarchy:
+    opcode: 467
+    size: 1440
+  FreeCompanyInfo:
+    opcode: 691
+    size: 80
+  FreeCompanyShortMessage:
+    opcode: 555
+    size: 120
+  FriendGroupIcon:
+    opcode: 839
+    size: 16
+  FriendRemoved:
+    opcode: 445
+    size: 48
+  FurnitureList:
+    opcode: 811
+    size: 2416
+  FurnitureTranslatedForObserver:
+    opcode: 709
+    size: 24
+  GatheringLog:
+    opcode: 585
+    size: 104
+  GoldSaucerInformation:
+    opcode: 275
+    size: 40
+  GrandCompanyInfo:
+    opcode: 355
+    size: 8
+  HaterList:
+    opcode: 978
+    size: 264
+  HouseList:
+    opcode: 791
+    size: 1216
+  HousingEstateGreeting:
+    opcode: 319
+    size: 208
+  HousingExteriorAppearanceUpdate:
+    opcode: 476
+    size: 48
+  HousingInteriorDetails:
+    opcode: 261
+    size: 56
+  HousingObjectDataValueSet:
+    opcode: 971
+    size: 48
+  HousingOccupiedLandInfo:
+    opcode: 518
+    size: 280
+  HousingStainUpdated:
+    opcode: 317
+    size: 16
+  HousingVacantLandInfo:
+    opcode: 455
+    size: 40
+  HousingWardInfo:
+    opcode: 624
+    size: 2416
+  IndoorFurnitureMaterialUpdated:
+    opcode: 701
+    size: 8
+  InitResponse:
+    opcode: 728
+    size: 16
+  InitializeObfuscation:
+    opcode: 757
+    size: 16
+  InteriorFurniturePlaced:
+    opcode: 638
+    size: 32
+  InventoryActionAck:
+    opcode: 705
+    size: 16
+  InventoryTransaction:
+    opcode: 829
+    size: 48
+  InventoryTransactionFinish:
+    opcode: 944
+    size: 16
+  InviteCharacterResult:
+    opcode: 488
+    size: 48
+  InviteReplyResult:
+    opcode: 831
+    size: 48
+  InviteUpdate:
+    opcode: 751
+    size: 72
+  LegacyQuestList:
+    opcode: 729
+    size: 40
+  Letter:
+    opcode: 239
+    size: 616
+  LetterUpdate:
+    opcode: 339
+    size: 144
+  LevequestCompleteList:
+    opcode: 463
+    size: 232
+  Linkshells:
+    opcode: 268
+    size: 448
+  LocationDiscovered:
+    opcode: 890
+    size: 8
+  LogOutComplete:
+    opcode: 199
+    size: 8
+  MailboxPreview:
+    opcode: 741
+    size: 1168
+  MailboxStatus:
+    opcode: 767
+    size: 16
+  MarketBoardHistory:
+    opcode: 491
+    size: 968
+  MarketBoardHits:
+    opcode: 613
+    size: 8
+  MarketBoardItems:
+    opcode: 954
+    size: 176
+  MarketBoardOfferings:
+    opcode: 181
+    size: 1448
+  Mogpendium:
+    opcode: 489
+    size: 144
+  Mount:
+    opcode: 876
+    size: 16
+  NewCrossworldLinkshell:
+    opcode: 230
+    size: 64
+  NpcYell:
+    opcode: 837
+    size: 32
+  OccultCrescentSetup:
+    opcode: 131
+    size: 160
+  OpenedTreasure:
+    opcode: 464
+    size: 24
+  OtherSearchInfo:
+    opcode: 930
+    size: 424
+  OwnedHousing:
+    opcode: 637
+    size: 136
+  PartyList:
+    opcode: 995
+    size: 3672
+  PartyMemberPortraits:
+    opcode: 888
+    size: 184
+  PartyMemberPositions:
+    opcode: 946
+    size: 64
+  PartyUpdate:
+    opcode: 325
+    size: 104
+  PingSyncReply:
+    opcode: 146
+    size: 32
+  PlayerName:
+    opcode: 786
+    size: 40
+  PlayerSetup:
+    opcode: 430
+    size: 2952
+  PlayerStats:
+    opcode: 398
+    size: 144
+  Playtime:
+    opcode: 246
+    size: 8
+  PortraitsInformation:
+    opcode: 168
+    size: 56
+  PrepareZoning:
+    opcode: 688
+    size: 16
+  QuestActiveList:
+    opcode: 918
+    size: 480
+  QuestCompleteList:
+    opcode: 864
+    size: 816
+  QuestTracker:
+    opcode: 687
+    size: 24
+  RecordGatheringLog:
+    opcode: 273
+    size: 8
+  RecruitingPartyCount:
+    opcode: 663
+    size: 968
+  RetainerInfo:
+    opcode: 502
+    size: 80
+  RetainerInfoEnd:
+    opcode: 593
+    size: 24
+  ScenarioGuide:
+    opcode: 796
+    size: 32
+  SearchFellowshipsNoResults:
+    opcode: 683
+    size: 24
+  SearchFellowshipsResults:
+    opcode: 158
+    size: 1520
+  SearchPlayersResult:
+    opcode: 578
+    size: 8
+  ServerNoticeMessage:
+    opcode: 763
+    size: 776
+  SetOnlineStatus:
+    opcode: 640
+    size: 8
+  SetPlayerCustomizeData:
+    opcode: 474
+    size: 26
+  SetSearchInfo:
+    opcode: 540
+    size: 216
+  SharedFATEInformation:
+    opcode: 873
+    size: 16
+  ShowLinkshellError:
+    opcode: 562
+    size: 24
+  SocialList:
+    opcode: 259
+    size: 1136
+  SpawnNpc:
+    opcode: 374
+    size: 656
+  SpawnObject:
+    opcode: 219
+    size: 64
+  SpawnPlayer:
+    opcode: 764
+    size: 664
+  SpawnTreasure:
+    opcode: 210
+    size: 112
+  SpectatorList:
+    opcode: 222
+    size: 36
+  StatusEffectList:
+    opcode: 349
+    size: 384
+  StatusEffectList3:
+    opcode: 861
+    size: 360
+  StatusEffectListDouble:
+    opcode: 800
+    size: 720
+  StatusEffectListPlayerDouble:
+    opcode: 760
+    size: 720
+  StrategyBoard:
+    opcode: 712
+    size: 1184
+  StrategyBoardReceivedAck:
+    opcode: 714
+    size: 16
+  StrategyBoardUpdate:
+    opcode: 373
+    size: 64
+  SupportDeskNotification:
+    opcode: 3260
+    size: 16
+  TitleList:
+    opcode: 159
+    size: 112
+  TreasureFadeOut:
+    opcode: 299
+    size: 8
+  TrustInformation:
+    opcode: 601
+    size: 728
+  UnkClassRelated:
+    opcode: 301
+    size: 8
+  UnkContentFinder:
+    opcode: 103
+    size: 16
+  UnkContentFinder2:
+    opcode: 260
+    size: 16
+  UnkDirector1:
+    opcode: 742
+    size: 32
+  UnkDirector2:
+    opcode: 543
+    size: 24
+  UnkFate:
+    opcode: 884
+    size: 24
+  UnkJobGauge:
+    opcode: 722
+    size: 8
+  UnkResponse2:
+    opcode: 353
+    size: 8
+  UnkSocialResponse:
+    opcode: 202
+    size: 80
+  UpdateClassInfo:
+    opcode: 460
+    size: 16
+  UpdateFittingShop:
+    opcode: 740
+    size: 16
+  UpdateHpMpTp:
+    opcode: 940
+    size: 8
+  UpdateInventorySlot:
+    opcode: 315
+    size: 64
+  UpdateItem:
+    opcode: 986
+    size: 64
+  UpdateMapMarkers16:
+    opcode: 250
+    size: 216
+  UpdateMapMarkers32:
+    opcode: 247
+    size: 424
+  UpdateMapMarkers4:
+    opcode: 297
+    size: 56
+  UpdateMapMarkers8:
+    opcode: 328
+    size: 112
+  UpdateMapMarkersForWardDivision:
+    opcode: 773
+    size: 96
+  UpdateQuest:
+    opcode: 175
+    size: 24
+  UpdateRecastTimes:
+    opcode: 269
+    size: 640
+  WalkInEvent:
+    opcode: 867
+    size: 24
+  WaymarkUpdate:
+    opcode: 233
+    size: 16
+  WeatherId:
+    opcode: 960
+    size: 8
+  ZoneDiceRollResult:
+    opcode: 384
+    size: 64
+  ZoneInit:
+    opcode: 171
+    size: 136
+ClientZoneIpcType:
+  ActionRequest:
+    opcode: 882
+    size: 32
+  ApplyFieldMarkerPreset:
+    opcode: 739
+    size: 104
+  BatchTranslateIndoorFurniture:
+    opcode: 273
+    size: 192
+  BuildEstateDeed:
+    opcode: 659
+    size: 32
+  CheckCWLinkshellNameAvailability:
+    opcode: 706
+    size: 40
+  ClientTrigger:
+    opcode: 565
+    size: 32
+  Config:
+    opcode: 909
+    size: 8
+  ContentFinderAction:
+    opcode: 472
+    size: 8
+  CreateFellowship:
+    opcode: 101
+    size: 64
+  CreateLocalLinkshellRequest:
+    opcode: 946
+    size: 40
+  CreateNewCrossworldLinkshell:
+    opcode: 495
+    size: 32
+  CrossRealmListingsRequest1:
+    opcode: 123
+    size: 56
+  CrossRealmListingsRequest2:
+    opcode: 373
+    size: 40
+  CrossworldLinkshellMemberListRequest:
+    opcode: 427
+    size: 16
+  DeleteLetter:
+    opcode: 881
+    size: 16
+  DisbandCrossworldLinkshell:
+    opcode: 597
+    size: 8
+  Disconnected:
+    opcode: 714
+    size: 8
+  Dive:
+    opcode: 934
+    size: 32
+  DyeInformation:
+    opcode: 986
+    size: 24
+  EditSearchInfo:
+    opcode: 424
+    size: 216
+  EnterTerritoryEvent:
+    opcode: 586
+    size: 8
+  EquipGearset:
+    opcode: 972
+    size: 72
+  EquipGearset2:
+    opcode: 1487
+    size: 128
+  EventReturnHandler2:
+    opcode: 422
+    size: 16
+  EventReturnHandler8:
+    opcode: 169
+    size: 40
+  EventYieldHandler128:
+    opcode: 1239
+    size: 520
+  EventYieldHandler16:
+    opcode: 1222
+    size: 72
+  EventYieldHandler2:
+    opcode: 281
+    size: 16
+  EventYieldHandler32:
+    opcode: 901
+    size: 136
+  EventYieldHandler4:
+    opcode: 735
+    size: 24
+  ExteriorRemodelItemOperation:
+    opcode: 349
+    size: 48
+  FallFromArena:
+    opcode: 550
+    size: 24
+  FinishLoading:
+    opcode: 425
+    size: 72
+  GMCommand:
+    opcode: 667
+    size: 32
+  GMCommandName:
+    opcode: 444
+    size: 52
+  GMCommandName2:
+    opcode: 524
+    size: 40
+  InitRequest:
+    opcode: 952
+    size: 120
+  InitiateReadyCheck:
+    opcode: 578
+    size: 8
+  InteriorRemodelItemOperation:
+    opcode: 164
+    size: 48
+  InviteCharacter:
+    opcode: 257
+    size: 48
+  InviteCharacterToCWLS:
+    opcode: 615
+    size: 24
+  InviteReply:
+    opcode: 388
+    size: 16
+  InviteReply2:
+    opcode: 396
+    size: 48
+  ItemOperation:
+    opcode: 318
+    size: 48
+  LeaveCrossworldLinkshell:
+    opcode: 252
+    size: 8
+  LinkshellInviteReply:
+    opcode: 984
+    size: 16
+  LogOut:
+    opcode: 260
+    size: 8
+  NewDiscovery:
+    opcode: 646
+    size: 16
+  OpenTreasure:
+    opcode: 800
+    size: 8
+  PartyChangeLeader:
+    opcode: 838
+    size: 48
+  PartyDisband:
+    opcode: 612
+    size: 8
+  PartyLeave:
+    opcode: 336
+    size: 8
+  PartyMemberKick:
+    opcode: 605
+    size: 48
+  PerformanceNote:
+    opcode: 352
+    size: 24
+  PingSync:
+    opcode: 872
+    size: 32
+  PlaceFurniture:
+    opcode: 452
+    size: 40
+  QueueDuties:
+    opcode: 200
+    size: 40
+  QueueRoulette:
+    opcode: 533
+    size: 24
+  ReadyCheckResponse:
+    opcode: 727
+    size: 8
+  RealtimeStrategyBoardFinished:
+    opcode: 386
+    size: 8
+  RemoveCWLSMember:
+    opcode: 277
+    size: 16
+  RemoveFriend:
+    opcode: 514
+    size: 48
+  RenameCrossworldLinkshell:
+    opcode: 850
+    size: 40
+  RequestAdventurerPlate:
+    opcode: 185
+    size: 16
+  RequestBlacklist:
+    opcode: 471
+    size: 8
+  RequestCharaInfoFromContentIds:
+    opcode: 708
+    size: 80
+  RequestCrossworldLinkshells:
+    opcode: 562
+    size: 8
+  RequestFellowships:
+    opcode: 106
+    size: 8
+  RequestFreeCompanyShortMessage:
+    opcode: 1665
+    size: 16
+  RequestMailbox:
+    opcode: 351
+    size: 8
+  RequestMarketBoardItems:
+    opcode: 903
+    size: 136
+  RequestOwnSearchInfo:
+    opcode: 699
+    size: 8
+  RequestPlaytime:
+    opcode: 155
+    size: 8
+  RequestRecruitingPartyCount:
+    opcode: 810
+    size: 8
+  RequestSearchInfo:
+    opcode: 220
+    size: 24
+  RewardDeliveryRequest:
+    opcode: 217
+    size: 8
+  SearchFellowships:
+    opcode: 899
+    size: 112
+  SearchFellowshipsJoin:
+    opcode: 528
+    size: 8
+  SearchPlayers:
+    opcode: 116
+    size: 176
+  SendChatMessage:
+    opcode: 443
+    size: 1056
+  SendLetter:
+    opcode: 342
+    size: 688
+  SetCWLSMemberRank:
+    opcode: 446
+    size: 24
+  SetClientLanguage:
+    opcode: 146
+    size: 8
+  SetFreeCompanyGreeting:
+    opcode: 1182
+    size: 200
+  SetFriendGroupIcon:
+    opcode: 491
+    size: 16
+  ShareStrategyBoard:
+    opcode: 288
+    size: 1184
+  SocialListRequest:
+    opcode: 148
+    size: 16
+  StandardControlsPivot:
+    opcode: 916
+    size: 8
+  StartCountdown:
+    opcode: 741
+    size: 40
+  StartTalkEvent:
+    opcode: 853
+    size: 16
+  StartWalkInEvent:
+    opcode: 891
+    size: 24
+  StrategyBoardReceived:
+    opcode: 834
+    size: 16
+  StrategyBoardUpdate:
+    opcode: 644
+    size: 64
+  TakeLetterAttachments:
+    opcode: 496
+    size: 64
+  Trade:
+    opcode: 376
+    size: 16
+  TranslateFurniture:
+    opcode: 842
+    size: 32
+  UnkCall2:
+    opcode: 878
+    size: 8
+  UnkMarketBoardRequest1:
+    opcode: 967
+    size: 8
+  UnkMarketBoardRequest2:
+    opcode: 854
+    size: 8
+  UnkSocialEvent:
+    opcode: 1706
+    size: 8
+  UpdateAquarium:
+    opcode: 174
+    size: 40
+  UpdateEstateGreeting:
+    opcode: 599
+    size: 208
+  UpdateEstateName:
+    opcode: 922
+    size: 32
+  UpdateEstateProfile:
+    opcode: 698
+    size: 56
+  UpdateOrchestrionPlaylist:
+    opcode: 442
+    size: 16
+  UpdatePositionHandler:
+    opcode: 555
+    size: 24
+  UpdatePositionHandlerInstance:
+    opcode: 938
+    size: 40
+  ViewCrossRealmListing:
+    opcode: 537
+    size: 16
+  ViewLetter:
+    opcode: 354
+    size: 16
+  WalkOutsideEvent:
+    opcode: 902
+    size: 24
+  WorldInteraction:
+    opcode: 467
+    size: 32
+  ZoneJump:
+    opcode: 941
+    size: 24
+ServerLobbyIpcType: {}
+ClientLobbyIpcType: {}
+ServerChatIpcType: {}
+ClientChatIpcType: {}
+CustomIpcType: {}

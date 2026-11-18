@@ -1,7 +1,8 @@
 use axum::response::Html;
 use axum::{Router, routing::get};
 use kawari::config::get_config;
-use kawari::{constants::SUPPORTED_GAME_VERSION, web_static_dir};
+use kawari::protocol_profile::{active_supported_game_version, init_runtime_protocol};
+use kawari::web_static_dir;
 use minijinja::context;
 use minijinja::{Environment, path_loader};
 use tower_http::services::ServeDir;
@@ -39,7 +40,7 @@ async fn setup() -> Html<String> {
                 login_server => config.login.server_name.clone(),
                 lobby_port => config.lobby.port,
                 lobby_host => config.lobby.server_name,
-                game_version => SUPPORTED_GAME_VERSION,
+                game_version => active_supported_game_version(),
                 frontier_host => config.frontier.server_name,
                 login_host => config.login.server_name.clone(),
                 server_url => config.web.server_name,
@@ -93,6 +94,7 @@ async fn main() {
         .nest_service("/static", ServeDir::new(web_static_dir!("")));
 
     let config = get_config();
+    init_runtime_protocol(&config);
 
     let addr = config.web.get_socketaddr();
     tracing::info!("Server started on {}", config.web.server_name);

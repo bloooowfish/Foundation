@@ -1,0 +1,62 @@
+ServerZoneIpcType:
+- name: HousingObjectDataValueSet
+  comment: Per-furniture object data values (flowerpots, display stands/mannequins, aquariums).
+  opcode: 971
+  size: 48
+- name: HousingStainUpdated
+  comment: Live stain update for indoor/outdoor placed furniture or exterior fixtures without reload.
+  opcode: 317
+  size: 16
+- name: IndoorFurnitureMaterialUpdated
+  comment: Live VaseFlower material_item_key update for paintings, blank partitions, canvases, and vases.
+  opcode: 701
+  size: 8
+- name: HousingExteriorAppearanceUpdate
+  comment: Live single-plot 8-part exterior fixture and stain update without ward reload.
+  opcode: 476
+  size: 48
+- name: BatchIndoorFurnitureTranslated
+  comment: Live batch translation/rotation of up to 10 indoor furnishings without reload.
+  opcode: 970
+  size: 208
+- name: BatchIndoorFurnitureSlotUpdate
+  comment: Live batch slot update/removal of up to 10 indoor furnishings.
+  opcode: 590
+  size: 32
+ClientZoneIpcType:
+- name: InteriorRemodelItemOperation
+  comment: Staging container 2012 (10 interior fixture slots) remodel commit operation.
+  opcode: 164
+  size: 48
+- name: ExteriorRemodelItemOperation
+  comment: Staging container 2011 (9 exterior fixture slots) remodel commit operation.
+  opcode: 349
+  size: 48
+- name: BatchTranslateIndoorFurniture
+  comment: Simultaneous move/rotate of up to 10 indoor furnishings.
+  opcode: 273
+  size: 192
+- name: UpdateEstateName
+  comment: Client updates estate name.
+  opcode: 922
+  size: 32
+- name: UpdateEstateGreeting
+  comment: Client updates estate greeting text.
+  opcode: 599
+  size: 208
+- name: UpdateEstateProfile
+  comment: Client updates estate profile tags and guest settings.
+  opcode: 698
+  size: 56
+- name: BuildEstateDeed
+  comment: Client builds estate house from construction permit deed.
+  opcode: 659
+  size: 32
+- name: UpdateAquarium
+  comment: Client updates aquarium fish and trim parameters.
+  opcode: 174
+  size: 40
+- name: UpdateOrchestrionPlaylist
+  comment: Client updates orchestrion playback/playlist.
+  opcode: 442
+  size: 16

@@ -543,6 +543,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "foundation-patch-sync"
+version = "7.58.0"
+dependencies = [
+ "kawari",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha1_smol",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -763,8 +775,10 @@ dependencies = [
  "diesel",
  "glam",
  "kawari-core-macro",
+ "libsqlite3-sys",
  "md5",
  "mlua",
+ "parking_lot",
  "physis",
  "serde",
  "serde_derive",

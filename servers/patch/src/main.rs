@@ -7,7 +7,10 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Router, routing::get};
 use kawari::config::get_config;
-use kawari::constants::{SUPPORTED_BOOT_VERSION, SUPPORTED_EXPAC_VERSIONS, SUPPORTED_GAME_VERSION};
+use kawari::protocol_profile::{
+    active_supported_boot_version, active_supported_expac_versions, active_supported_game_version,
+    init_runtime_protocol,
+};
 use kawari_patch::list_patch_files;
 use physis::Version;
 use physis::patchlist::{PatchEntry, PatchList, PatchListType};
@@ -68,6 +71,8 @@ async fn verify_session(
         let expansion_versions = &body_parts[1..body_parts.len() - 1]; // last part is empty
 
         let game_version = Version(&game_version);
+        let supported_game_version = active_supported_game_version();
+        let supported_expac_versions = active_supported_expac_versions();
 
         for expansion_version in expansion_versions {
             let expac_version_parts: Vec<&str> = expansion_version.split('\t').collect();
@@ -78,35 +83,43 @@ async fn verify_session(
                 - 1; // e.g. ex1 turns into 0
             let expansion_version = expac_version_parts[1];
 
-            if Version(expansion_version) > Version(SUPPORTED_EXPAC_VERSIONS[expansion_index]) {
+            let Some(expected_expac_version) = supported_expac_versions.get(expansion_index) else {
                 tracing::warn!(
-                    "{} {expansion_version} is above supported version {}! This means that Kawari needs to be updated to support this version, if you don't know how to please be patient with us. Thanks!",
+                    "{} index {expansion_index} exceeds configured expansions ({})",
                     expac_version_parts[0],
-                    SUPPORTED_EXPAC_VERSIONS[expansion_index]
+                    supported_expac_versions.len()
+                );
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
+
+            if Version(expansion_version) > Version(expected_expac_version) {
+                tracing::warn!(
+                    "{} {expansion_version} is above supported version {expected_expac_version}! This means that Kawari needs to be updated to support this version, if you don't know how to please be patient with us. Thanks!",
+                    expac_version_parts[0],
                 );
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         }
 
         // Their version is too new
-        if game_version > Version(SUPPORTED_GAME_VERSION) {
+        if game_version > Version(&supported_game_version) {
             tracing::warn!(
-                "{game_version} is above supported game version {SUPPORTED_GAME_VERSION}! This means that Kawari needs to be updated to support this version, if you don't know how to please be patient with us. Thanks!"
+                "{game_version} is above supported game version {supported_game_version}! This means that Kawari needs to be updated to support this version, if you don't know how to please be patient with us. Thanks!"
             );
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
 
         // If we are up to date, yay!
-        if game_version == Version(SUPPORTED_GAME_VERSION) {
+        if game_version == Version(&supported_game_version) {
             let mut headers = HeaderMap::new();
             headers.insert("X-Patch-Unique-Id", sid.parse().unwrap());
 
             return (headers).into_response();
         }
 
-        if game_version < Version(SUPPORTED_GAME_VERSION) {
+        if game_version < Version(&supported_game_version) {
             tracing::warn!(
-                "{game_version} is below supported game version {SUPPORTED_GAME_VERSION}!"
+                "{game_version} is below supported game version {supported_game_version}!"
             );
         }
 
@@ -248,16 +261,17 @@ async fn verify_boot(
 
         let actual_boot_version = boot_version.split("?time").collect::<Vec<&str>>()[0];
         let boot_version = Version(actual_boot_version);
+        let supported_boot_version = active_supported_boot_version();
 
         // If we are up to date, yay!
-        if boot_version == Version(SUPPORTED_BOOT_VERSION) {
+        if boot_version == Version(&supported_boot_version) {
             return (headers).into_response();
         }
 
         // Their version is too new
-        if boot_version > Version(SUPPORTED_BOOT_VERSION) {
+        if boot_version > Version(&supported_boot_version) {
             tracing::warn!(
-                "{boot_version} is above supported boot version {SUPPORTED_BOOT_VERSION}! This means that Kawari needs to be updated to support this version, if you don't know how to please be patient with us. Thanks!"
+                "{boot_version} is above supported boot version {supported_boot_version}! This means that Kawari needs to be updated to support this version, if you don't know how to please be patient with us. Thanks!"
             );
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
@@ -331,6 +345,7 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let config = get_config();
+    init_runtime_protocol(&config);
 
     let app = Router::new()
         .route(

@@ -358,6 +358,25 @@ pub enum ClientTriggerCommand {
         page: u32,
     },
 
+    /// The client requests the Exterior Remodeling window.
+    #[brw(magic = 1101u32)]
+    RequestEstateExteriorRemodel {
+        /// Plot index associated with the exterior being remodeled.
+        plot_index: u32,
+    },
+
+    /// The client requests the Edit Interior material window.
+    #[brw(magic = 1102u32)]
+    RequestEstateInteriorRemodel {},
+
+    /// The client applies or cancels an estate appearance remodeling session (`mode = 0` confirm, `255` cancel).
+    #[brw(magic = 1104u32)]
+    FinishEstateRemodel { mode: u32 },
+
+    /// The client primes/toggles the interior remodel flow.
+    #[brw(magic = 1111u32)]
+    InteriorRemodelMenuToggled {},
+
     /// When a player interacts with an unoccupied Placard in a ward.
     #[brw(magic = 1105u32)]
     RequestHousingVacantPlotInfo {
@@ -472,6 +491,25 @@ pub enum ClientTriggerCommand {
         container_index: u16,
         unk4: u16, // Just in case, observed as zeroes but with all this stuff lately, you never know.
     },
+
+    /// The client requests the Interior Design renovation pattern list.
+    #[brw(magic = 1168u32)]
+    RequestEstateInteriorPattern {
+        /// 255 when opening the list.
+        mode: u32,
+    },
+
+    /// The client applies an Interior Design renovation pattern.
+    #[brw(magic = 1169u32)]
+    ApplyEstateInteriorPattern {
+        mode: u32,
+        /// Row id on the HousingRenovation sheet.
+        renovation_row_id: u32,
+    },
+
+    /// The client requests storage/status information from the Interior Design window.
+    #[brw(magic = 1170u32)]
+    RequestEstateInteriorPatternStatus { mode: u32, unk1: u32 },
 
     /// The client requests to repair and item at a mender.
     #[brw(magic = 1600u32)]

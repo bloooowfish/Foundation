@@ -22,12 +22,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let config = get_config();
+    kawari::protocol_profile::init_runtime_protocol(&config);
 
     let addr = config.lobby.get_socketaddr();
 
     let listener = TcpListener::bind(addr).await.unwrap();
-
-    let config = get_config();
 
     let game_exe_path = &format!(
         "{}{}{}",

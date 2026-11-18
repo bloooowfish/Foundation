@@ -129,6 +129,12 @@ pub use housing_interior_furniture::{
     Furniture, FurnitureList, FurnitureTranslatedForObserver, HousingInteriorDetails,
 };
 
+use super::housing_ext::{
+    BatchIndoorFurnitureSlotUpdate, BatchIndoorFurnitureTranslated,
+    HousingExteriorAppearanceUpdate, HousingObjectDataValueSet, HousingStainUpdated,
+    IndoorFurnitureMaterialUpdated,
+};
+
 mod housing_occupied_land_info;
 pub use housing_occupied_land_info::HousingOccupiedLandInfo;
 
@@ -1508,6 +1514,12 @@ pub enum ServerZoneIpcData {
         fellowships: Vec<FellowshipSearchInfo>,
     },
     UpdateMapMarkersForWardDivision(UpdateMapMarkersForWardDivision),
+    HousingObjectDataValueSet(HousingObjectDataValueSet),
+    HousingStainUpdated(HousingStainUpdated),
+    IndoorFurnitureMaterialUpdated(IndoorFurnitureMaterialUpdated),
+    HousingExteriorAppearanceUpdate(HousingExteriorAppearanceUpdate),
+    BatchIndoorFurnitureTranslated(BatchIndoorFurnitureTranslated),
+    BatchIndoorFurnitureSlotUpdate(BatchIndoorFurnitureSlotUpdate),
 }
 
 #[cfg(test)]

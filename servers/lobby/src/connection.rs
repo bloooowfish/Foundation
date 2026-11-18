@@ -6,7 +6,6 @@ use tokio::net::TcpStream;
 use kawari::{
     common::{BasicServiceAccountData, GAME_SERVICE, MAX_CHARACTERS, ObjectId, WORLD_NAME},
     config::get_config,
-    constants::SUPPORTED_EXPAC_VERSIONS,
     ipc::lobby::{
         DistRetainerInfo, NackReply,
         service_login_reply::{ServiceLoginReplyFlag2, ServiceLoginReplyFlag4},
@@ -15,6 +14,7 @@ use kawari::{
         CompressionType, ConnectionState, ConnectionType, PacketSegment, SegmentData, SegmentType,
         generate_encryption_key, parse_packet, send_custom_world_packet, send_packet,
     },
+    protocol_profile::active_supported_expac_versions,
 };
 
 use kawari::ipc::kawari::{CustomIpcData, CustomIpcSegment};
@@ -65,13 +65,15 @@ fn do_game_version_check(
         return false;
     }
 
+    let expected_expacs = active_supported_expac_versions();
     for (client_version, expected_version) in client_version_data
         .expansion_pack_versions
         .iter()
-        .zip(SUPPORTED_EXPAC_VERSIONS.iter())
+        .zip(expected_expacs.iter())
     {
         // The client doesn't send a patch2 value in its expansion version strings, so we just pretend it doesn't exist on our side.
-        let expected_version = &expected_version[..expected_version.len() - 5].to_string();
+        let prefix_len = expected_version.len().saturating_sub(5);
+        let expected_version = &expected_version[..prefix_len];
         if client_version != expected_version {
             tracing::error!(
                 "One of the client's expansion versions does not match! Rejecting session! Got {}, expected {}",

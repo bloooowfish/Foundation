@@ -10,6 +10,9 @@ pub mod config;
 /// Everything packet parsing related.
 pub mod packet;
 
+/// Runtime protocol versioning, opcode remapping, and PE binary extraction.
+pub mod protocol_profile;
+
 #[rustfmt::skip]
 #[doc(hidden)]
 pub mod constants;

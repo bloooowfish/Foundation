@@ -32,10 +32,12 @@ mod dye_information;
 pub use dye_information::DyeInformation;
 
 use crate::ipc::zone::{
-    CWLSPermissionRank, InviteReply, InviteType, LETTER_MSG_MAX_LENGTH, LinkshellInviteResponse,
-    MAX_MAIL_ATTACHMENTS_STORAGE, OnlineStatusMask, SearchInfo, SearchUIClassJobMask,
-    SearchUIGrandCompanies, SocialListUILanguages, StrategyBoard, StrategyBoardUpdate,
-    WaymarkPreset,
+    BatchTranslateIndoorFurniture, BuildEstateDeed, CWLSPermissionRank,
+    ExteriorRemodelItemOperation, InteriorRemodelItemOperation, InviteReply, InviteType,
+    LETTER_MSG_MAX_LENGTH, LinkshellInviteResponse, MAX_MAIL_ATTACHMENTS_STORAGE, OnlineStatusMask,
+    SearchInfo, SearchUIClassJobMask, SearchUIGrandCompanies, SocialListUILanguages, StrategyBoard,
+    StrategyBoardUpdate, UpdateAquarium, UpdateEstateGreeting, UpdateEstateName,
+    UpdateEstateProfile, UpdateOrchestrionPlaylist, WaymarkPreset,
 };
 
 use crate::ipc::zone::black_list::RequestBlacklist;
@@ -679,6 +681,15 @@ pub enum ClientZoneIpcData {
     SearchFellowshipsJoin {
         community_id: u64,
     },
+    InteriorRemodelItemOperation(InteriorRemodelItemOperation),
+    ExteriorRemodelItemOperation(ExteriorRemodelItemOperation),
+    BatchTranslateIndoorFurniture(BatchTranslateIndoorFurniture),
+    UpdateEstateName(UpdateEstateName),
+    UpdateEstateGreeting(UpdateEstateGreeting),
+    UpdateEstateProfile(UpdateEstateProfile),
+    BuildEstateDeed(BuildEstateDeed),
+    UpdateAquarium(UpdateAquarium),
+    UpdateOrchestrionPlaylist(UpdateOrchestrionPlaylist),
 }
 
 #[cfg(test)]

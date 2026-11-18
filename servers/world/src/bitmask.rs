@@ -64,7 +64,10 @@ impl<const N: usize, T: BitmaskTransformation + std::fmt::Debug> deserialize::Fr
 impl<const N: usize, T: BitmaskTransformation + std::fmt::Debug> From<Vec<u8>>
     for GenericBitmask<N, T>
 {
-    fn from(value: Vec<u8>) -> Self {
+    fn from(mut value: Vec<u8>) -> Self {
+        if value.len() < N {
+            value.resize(N, 0);
+        }
         Self {
             data: value,
             _phantom: PhantomData,
@@ -85,20 +88,19 @@ impl<const N: usize, T: BitmaskTransformation + std::fmt::Debug> GenericBitmask<
     /// Sets this specific `value`.
     pub fn set(&mut self, value: u32) {
         let (value, index) = T::transform_value(value);
-        if (index as usize) < self.data.len() {
-            self.data[index as usize] |= value;
-        } else {
-            tracing::warn!(
-                "Failed to set bitmask: {index} despite {}?!",
-                self.data.len()
-            );
+        let idx = index as usize;
+        if idx >= self.data.len() {
+            self.data.resize(idx + 1, 0);
         }
+        self.data[idx] |= value;
     }
 
     /// Clears this specific `value`.
     pub fn clear(&mut self, value: u32) {
         let (value, index) = T::transform_value(value);
-        self.data[index as usize] &= !value;
+        if let Some(byte) = self.data.get_mut(index as usize) {
+            *byte &= !value;
+        }
     }
 
     /// Toggles the `value`, and if wasn't previously set then this returns true. Otherwise false.
@@ -106,7 +108,11 @@ impl<const N: usize, T: BitmaskTransformation + std::fmt::Debug> GenericBitmask<
         let previously_unset = !self.contains(value);
 
         let (value, index) = T::transform_value(value);
-        self.data[index as usize] ^= value;
+        let idx = index as usize;
+        if idx >= self.data.len() {
+            self.data.resize(idx + 1, 0);
+        }
+        self.data[idx] ^= value;
 
         previously_unset
     }
@@ -114,7 +120,9 @@ impl<const N: usize, T: BitmaskTransformation + std::fmt::Debug> GenericBitmask<
     /// Checks if this `value` is set.
     pub fn contains(&self, value: u32) -> bool {
         let (value, index) = T::transform_value(value);
-        (self.data[index as usize] & value) == value
+        self.data
+            .get(index as usize)
+            .is_some_and(|byte| (*byte & value) == value)
     }
 
     /// Sets all bits of this mask to 0xFF (255)
@@ -238,5 +246,18 @@ mod tests {
         assert_eq!(bitmask.data, vec![192, 0, 0, 0]);
         assert_eq!(bitmask.contains(0), true);
         assert_eq!(bitmask.contains(1), true);
+    }
+
+    #[test]
+    fn legacy_short_bitmask_is_bounds_safe() {
+        let mut bitmask: Bitmask<8> = Bitmask::from(vec![1u8, 0u8]);
+        assert_eq!(bitmask.data.len(), 8);
+        assert!(bitmask.contains(0));
+        assert!(!bitmask.contains(5000));
+        bitmask.clear(5000);
+        bitmask.set(100);
+        assert!(bitmask.contains(100));
+        assert!(bitmask.toggle(120));
+        assert!(bitmask.contains(120));
     }
 }
