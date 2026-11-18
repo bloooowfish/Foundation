@@ -75,13 +75,32 @@ if (-not (Test-Path -LiteralPath $ConfigPath)) {
     exit 1
 }
 
+function Test-WorldHasOodle {
+    param([string]$ExePath)
+
+    if (-not (Test-Path -LiteralPath $ExePath)) {
+        return $false
+    }
+
+    $text = [System.Text.Encoding]::GetEncoding(28591).GetString([System.IO.File]::ReadAllBytes($ExePath))
+    return $text.Contains("oodle-network-shared") -and (-not $text.Contains("Something is trying to use Oodle"))
+}
+
 $ProfileName = if ($Release) { "release" } else { "debug" }
 $ProfileDir = Join-Path $RepoRoot (Join-Path "target" $ProfileName)
 $RunExe = Join-Path $ProfileDir "kawari-run.exe"
+$WorldExe = Join-Path $ProfileDir "kawari-world.exe"
+$LobbyExe = Join-Path $ProfileDir "kawari-lobby.exe"
+$NeedsOodleRebuild = (Test-Path -LiteralPath $WorldExe) -and (-not (Test-WorldHasOodle -ExePath $WorldExe))
 
-if ($Build -or -not (Test-Path -LiteralPath $RunExe)) {
-    Write-Host "[Foundation] Building workspace (profile=$ProfileName, features=oodle)..." -ForegroundColor Cyan
-    $cargoArgs = @("build", "--workspace", "--exclude", "kawari-navimesh", "--features", "oodle")
+if ($Build -or -not (Test-Path -LiteralPath $RunExe) -or -not (Test-Path -LiteralPath $WorldExe) -or -not (Test-Path -LiteralPath $LobbyExe) -or $NeedsOodleRebuild) {
+    if ($NeedsOodleRebuild -and -not $Build) {
+        Write-Host "[Foundation] Detected kawari-world without Oodle feature; rebuilding with kawari/oodle..." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "[Foundation] Building workspace (profile=$ProfileName, features=kawari/oodle)..." -ForegroundColor Cyan
+    }
+    $cargoArgs = @("build", "--workspace", "--exclude", "kawari-navimesh", "--features", "kawari/oodle")
     if ($Release) {
         $cargoArgs += "--release"
     }
