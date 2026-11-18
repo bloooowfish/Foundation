@@ -22,7 +22,7 @@ function onReturn(scene, results, player)
         [339] = 573, -- Mist to Topmast Apartment Lobby,                             s1i6
         [340] = 574, -- The Lavender Beds to Lily Hills Apartment Lobby,             f1i6
         [341] = 575, -- The Goblet to Sultana's Breath Apartment Lobby,              w1i6
-        [614] = 654, -- Shirogane to Kobai Goten Apartment Lobby,                    e1i6
+        [641] = 654, -- Shirogane to Kobai Goten Apartment Lobby,                    e1i6
         [979] = 985, -- Empyreum to Ingleside Apartment Lobby,                       r1i6
     }
 
@@ -31,15 +31,14 @@ function onReturn(scene, results, player)
         player:finish_event()
         local destination_zone = WARD_LOBBIES[player.zone.id]
         if destination_zone ~= nil then
-           player:change_territory(destination_zone, { x = -0.25, y = -0.39, z = 10}, 180.0) -- TODO: Are there popranges for this anywhere? Initial findings seem to indicate no. For now we use a position captured from retail.
+           player:change_territory(destination_zone, { x = -0.25, y = -0.39, z = 10}, math.pi)
            return
         else -- If it's nil we're already in a ward lobby most likely, and the option to enter a lobby from within a lobby makes no sense
             player:send_message("This option shouldn't be here and is a bug in Kawari, please select a different option.")
         end
     elseif results[1] == ENTER_MY_APARTMENT then
         player:finish_event()
-        local destination_zone = 609 -- Lily Hills Apartment, for now
-        player:change_territory(destination_zone, { x = 0.0, y = 0.0, z = 0.0}, 180.0) -- TODO: Are there popranges for this anywhere?
+        player:housing_enter_apartment()
         return
     end
     player:finish_event()

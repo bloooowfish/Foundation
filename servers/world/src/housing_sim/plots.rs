@@ -119,17 +119,30 @@ pub fn nudge_plot_entrance_exit(
         entrance_position.0.y,
         entrance_position.0.z + distance * angle.sin(),
     ));
-    (nudged, entrance_rotation)
+    (nudged, wrap_angle_radians(entrance_rotation))
+}
+
+/// Returns the indoor entry `(position, rotation_radians)` right inside the front door,
+/// facing inward (`PI` rad = `-Z`) for houses or `(0, 0, 0)` for apartments.
+pub fn indoor_entry_transform(territory_type_id: u16) -> (Position, f32) {
+    if is_apartment_territory(territory_type_id) {
+        (Position(Vec3A::ZERO), std::f32::consts::PI)
+    } else {
+        (
+            Position(Vec3A::new(-0.25, -0.39, 5.0)),
+            std::f32::consts::PI,
+        )
+    }
 }
 
 /// Returns the city-state aetheryte ID corresponding to a housing district or indoor territory.
 pub fn city_fallback_aetheryte_for_territory(zone_id: u16) -> u32 {
     match zone_id {
-        339 | 282..=284 | 608 => 8,   // Limsa Lominsa
-        340 | 342..=344 | 609 => 2,   // New Gridania
-        341 | 345..=347 | 610 => 9,   // Ul'dah
-        641 | 649..=651 | 655 => 111, // Kugane
-        979 | 980..=982 | 999 => 70,  // Foundation
+        339 | 282..=284 | 384 | 573 | 608 => 8,   // Limsa Lominsa
+        340 | 342..=344 | 385 | 574 | 609 => 2,   // New Gridania
+        341 | 345..=347 | 386 | 575 | 610 => 9,   // Ul'dah
+        641 | 649..=651 | 652 | 654 | 655 => 111, // Kugane
+        979 | 980..=982 | 983 | 985 | 999 => 70,  // Foundation
         _ => 2,
     }
 }
@@ -140,17 +153,59 @@ pub fn default_district_for_zone(zone_id: u16) -> u16 {
         return zone_id;
     }
     match zone_id {
-        282..=284 | 608 => 339,
-        342..=344 | 609 => 340,
-        345..=347 | 610 => 341,
-        649..=651 | 655 => 641,
-        980..=982 | 999 => 979,
+        282..=284 | 384 | 573 | 608 => 339,
+        342..=344 | 385 | 574 | 609 => 340,
+        345..=347 | 386 | 575 | 610 => 341,
+        649..=651 | 652 | 654 | 655 => 641,
+        980..=982 | 983 | 985 | 999 => 979,
         _ => 340,
     }
 }
 
 /// Canonical outdoor residential ward territory IDs in sheet order.
 pub const HOUSING_DISTRICT_TERRITORIES: [u16; 5] = [339, 340, 341, 641, 979];
+
+/// Parses a housing district name, alias, or numeric territory ID into a canonical outdoor ward territory ID.
+pub fn parse_district_territory(token: &str) -> Option<u16> {
+    match token.trim().to_ascii_lowercase().as_str() {
+        "mist" | "limsa" | "s1h1" | "339" => Some(339),
+        "lavender" | "lavenderbeds" | "lavender_beds" | "lavender-beds" | "lb" | "gridania"
+        | "f1h1" | "340" => Some(340),
+        "goblet" | "uldah" | "ul'dah" | "w1h1" | "341" => Some(341),
+        "shirogane" | "shiro" | "kugane" | "e1h1" | "641" => Some(641),
+        "empyreum" | "ishgard" | "firmament" | "foundation" | "r1h1" | "979" => Some(979),
+        other => match other {
+            "안개빛" | "안개" | "림사" => Some(339),
+            "라벤더" | "안식처" | "그리다니아" => Some(340),
+            "하늘잔" | "울다하" => Some(341),
+            "시로가네" | "쿠가네" => Some(641),
+            "엠피레움" | "이슈가르드" | "창천" => Some(979),
+            _ => None,
+        },
+    }
+}
+
+/// Returns a human-readable display name for an outdoor housing district territory ID.
+pub const fn district_display_name(territory_type_id: u16) -> &'static str {
+    match territory_type_id {
+        339 => "Mist",
+        340 => "Lavender Beds",
+        341 => "The Goblet",
+        641 => "Shirogane",
+        979 => "Empyreum",
+        _ => "Housing Ward",
+    }
+}
+
+/// Returns the canonical 0-based `plot_index` (`0..30`) in `(territory_type_id, division)` whose native physical lot matches `size`.
+pub fn canonical_plot_for_district_and_size(
+    territory_type_id: u16,
+    division: u8,
+    size: PlotSize,
+) -> Option<u8> {
+    (0u8..30)
+        .find(|&plot| plot_spec(territory_type_id, division, plot).is_some_and(|s| s.size == size))
+}
 
 /// Canonical indoor apartment territory ID for each housing district.
 pub fn apartment_territory_for_district(district_territory_id: u16) -> Option<u16> {
@@ -162,6 +217,23 @@ pub fn apartment_territory_for_district(district_territory_id: u16) -> Option<u1
         979 => Some(999), // Empyreum
         _ => None,
     }
+}
+
+/// Canonical indoor apartment lobby territory ID for each housing district.
+pub const fn apartment_lobby_territory_for_district(district_territory_id: u16) -> Option<u16> {
+    match district_territory_id {
+        339 => Some(573), // Topmast Lobby
+        340 => Some(574), // Lily Hills Lobby
+        341 => Some(575), // Sultana's Breath Lobby
+        641 => Some(654), // Kobai Goten Lobby
+        979 => Some(985), // Ingleside Lobby
+        _ => None,
+    }
+}
+
+/// Returns whether `territory_type_id` is an apartment lobby territory.
+pub const fn is_apartment_lobby_territory(territory_type_id: u16) -> bool {
+    matches!(territory_type_id, 573 | 574 | 575 | 654 | 985)
 }
 
 /// Returns whether `territory_type_id` is an apartment building room territory.
@@ -523,5 +595,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn parse_district_territory_supports_all_aliases() {
+        assert_eq!(parse_district_territory("mist"), Some(339));
+        assert_eq!(parse_district_territory("안개빛"), Some(339));
+        assert_eq!(parse_district_territory("339"), Some(339));
+        assert_eq!(parse_district_territory("lavender"), Some(340));
+        assert_eq!(parse_district_territory("라벤더"), Some(340));
+        assert_eq!(parse_district_territory("goblet"), Some(341));
+        assert_eq!(parse_district_territory("하늘잔"), Some(341));
+        assert_eq!(parse_district_territory("shirogane"), Some(641));
+        assert_eq!(parse_district_territory("시로가네"), Some(641));
+        assert_eq!(parse_district_territory("empyreum"), Some(979));
+        assert_eq!(parse_district_territory("엠피레움"), Some(979));
+        assert_eq!(parse_district_territory("foundation"), Some(979));
+        assert_eq!(parse_district_territory("979"), Some(979));
+    }
+
+    #[test]
+    fn canonical_plot_matches_requested_size_for_all_districts_and_divisions() {
+        for territory_id in HOUSING_DISTRICT_TERRITORIES {
+            for division in [0u8, 1] {
+                for size in [PlotSize::Small, PlotSize::Medium, PlotSize::Large] {
+                    let plot = canonical_plot_for_district_and_size(territory_id, division, size)
+                        .expect("canonical plot must exist");
+                    let spec = plot_spec(territory_id, division, plot).expect("spec must exist");
+                    assert_eq!(
+                        spec.size, size,
+                        "zone {territory_id} div {division} plot {plot} mismatch"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn indoor_entry_transform_uses_radians_within_quantization_range() {
+        let (house_pos, house_rot) = indoor_entry_transform(284);
+        assert_eq!(house_pos, Position(Vec3A::new(-0.25, -0.39, 5.0)));
+        assert!((-std::f32::consts::PI..=std::f32::consts::PI).contains(&house_rot));
+
+        let (apt_pos, apt_rot) = indoor_entry_transform(999);
+        assert_eq!(apt_pos, Position(Vec3A::ZERO));
+        assert!((-std::f32::consts::PI..=std::f32::consts::PI).contains(&apt_rot));
     }
 }

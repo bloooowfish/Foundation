@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use crate::common::{FromServer, ToServer};
 use crate::inventory::{DesiredHousingInventoryPages, Item};
 use crate::lua::{KawariLua, LuaPlayer, LuaTask};
-use crate::server::network::NetworkState;
+use crate::server::network::{DestinationNetwork, NetworkState};
 use crate::server::zone::{begin_change_zone, do_change_zone, pick_point_in_pop_range};
 use crate::server::{InstanceQuery, WorldServer};
 use crate::{Event, EventHandler, GameData, ZoneConnection};
@@ -32,8 +32,8 @@ use super::containers::{
 };
 use super::db::{
     AquariumObjectState, FurnitureObjectData, HousingEstateRow, HousingFurnitureRow,
-    MAX_ESTATE_GREETING_BYTES, MAX_ESTATE_NAME_BYTES, clamp_utf8, create_snapshot,
-    delete_furniture_slot, estate_by_land_ident, estate_by_location,
+    MAX_ESTATE_GREETING_BYTES, MAX_ESTATE_NAME_BYTES, apartments_in_ward, clamp_utf8,
+    create_snapshot, delete_furniture_slot, estate_by_land_ident, estate_by_location,
     list_placed_furniture_in_scope, move_furniture_row, save_estate, update_furniture_object_data,
     update_furniture_position, update_furniture_stain, upsert_furniture,
 };
@@ -41,12 +41,12 @@ use super::fixtures::{
     StoredHouseExterior, StoredHouseInterior, apply_exterior_remodel_op, apply_interior_remodel_op,
 };
 use super::flows::{
-    complete_deferred_indoor_tail_on_remodel, connection_catalog, ensure_local_apartment_estate,
-    ensure_local_plot_estate, execute_housing_reload, publish_session_snapshot,
-    push_indoor_live_refresh, rebuild_house_inventory_from_db, send_apartment_list_from_db,
-    send_housing_placard_info, send_housing_ward_info, send_owned_housing,
-    sync_current_overlays_for_connection, target_indoor_territory_for_estate,
-    warp_into_estate_interior, warp_to_estate_outdoor,
+    build_selection_from_row, complete_deferred_indoor_tail_on_remodel, connection_catalog,
+    ensure_local_apartment_estate, ensure_local_plot_estate, execute_housing_reload,
+    publish_session_snapshot, push_indoor_live_refresh, rebuild_house_inventory_from_db,
+    send_apartment_list_from_db, send_housing_placard_info, send_housing_ward_info,
+    send_owned_housing, sync_current_overlays_for_connection, target_indoor_territory_for_estate,
+    warp_into_estate_interior, warp_to_apartment_outdoor, warp_to_estate_outdoor,
 };
 use super::gamedata_ext::cached_housing_catalog;
 use super::overlays::{
@@ -54,8 +54,9 @@ use super::overlays::{
     translate_single_overlay, upsert_single_overlay,
 };
 use super::plots::{
-    city_fallback_aetheryte_for_territory, default_district_for_zone, is_apartment_territory,
-    is_house_interior_territory, nearest_plot_to_position, nudge_plot_entrance_exit, plot_spec,
+    city_fallback_aetheryte_for_territory, default_district_for_zone, indoor_entry_transform,
+    is_apartment_lobby_territory, is_apartment_territory, is_house_interior_territory,
+    nearest_plot_to_position, nudge_plot_entrance_exit, plot_spec,
 };
 use super::session::{HousingSimFromServer, HousingSimToServer, HousingSseEvent, ReloadMode};
 
@@ -63,7 +64,7 @@ use super::session::{HousingSimFromServer, HousingSimToServer, HousingSseEvent, 
 /// Returns `true` if handled completely; returns `false` to let upstream continue normal handling.
 pub async fn try_handle_client_ipc(
     connection: &mut ZoneConnection,
-    _lua_player: &mut LuaPlayer,
+    lua_player: &mut LuaPlayer,
     _events: &mut Vec<(Box<dyn EventHandler>, Event)>,
     ipc: &ClientZoneIpcData,
 ) -> bool {
@@ -99,26 +100,51 @@ pub async fn try_handle_client_ipc(
             try_handle_housing_chat_command(connection, &chat.message.to_string()).await
         }
         ClientZoneIpcData::StartTalkEvent {
-            actor_id: _,
+            actor_id,
             handler_id,
         } => {
             let zone_id = connection.player_data.volatile.zone_id as u16;
-            if kawari::common::internal_housing_row(zone_id).is_some()
-                && let Some((division, plot_index)) =
-                    nearest_plot_to_position(zone_id, connection.player_data.volatile.position)
-            {
-                connection.housing_sim.last_entrance_plot = Some((division, plot_index));
-                connection.housing_sim.pending_placard_location = Some((division, plot_index));
-                if handler_id.handler_type() == HandlerType::CustomTalk
-                    && handler_id.event_id() == 135
-                {
-                    let ward = connection
-                        .housing_sim
-                        .display_ward_context
-                        .map(|c| c.ward_index)
-                        .unwrap_or(0);
-                    send_housing_placard_info(connection, zone_id, ward, division, plot_index)
-                        .await;
+            if kawari::common::internal_housing_row(zone_id).is_some() {
+                let plot_match = lua_player
+                    .zone_data
+                    .cached_housing_entrance_plots
+                    .get(&actor_id.object_id.0)
+                    .map(|&raw| (raw / 30, raw % 30))
+                    .or_else(|| {
+                        let plots = &lua_player.zone_data.cached_housing_plots;
+                        if plots.is_empty() {
+                            return None;
+                        }
+                        let player_pos =
+                            glam::Vec3::from(connection.player_data.volatile.position.0);
+                        plots
+                            .iter()
+                            .enumerate()
+                            .min_by(|(_, (a, _)), (_, (b, _))| {
+                                let da = player_pos.distance_squared(glam::Vec3::from(a.0));
+                                let db = player_pos.distance_squared(glam::Vec3::from(b.0));
+                                da.total_cmp(&db)
+                            })
+                            .map(|(raw, _)| ((raw / 30) as u8, (raw % 30) as u8))
+                    })
+                    .or_else(|| {
+                        nearest_plot_to_position(zone_id, connection.player_data.volatile.position)
+                    });
+
+                if let Some((division, plot_index)) = plot_match {
+                    connection.housing_sim.last_entrance_plot = Some((division, plot_index));
+                    connection.housing_sim.pending_placard_location = Some((division, plot_index));
+                    if handler_id.handler_type() == HandlerType::CustomTalk
+                        && handler_id.event_id() == 135
+                    {
+                        let ward = connection
+                            .housing_sim
+                            .display_ward_context
+                            .map(|c| c.ward_index)
+                            .unwrap_or(0);
+                        send_housing_placard_info(connection, zone_id, ward, division, plot_index)
+                            .await;
+                    }
                 }
             }
             false
@@ -1535,14 +1561,9 @@ pub(crate) fn handle_server_housing_message(
 
             let (pos, rot) = if let Some(p) = preserve_pos {
                 (Some(*p), *preserve_rot)
-            } else if let Some(obj) = target_instance
-                .zone
-                .find_entrance()
-                .or_else(|| target_instance.zone.find_random_pop_range())
-            {
-                (Some(pick_point_in_pop_range(obj)), Some(0.0))
             } else {
-                (None, None)
+                let (entry_pos, entry_rot) = indoor_entry_transform(*territory_type_id);
+                (Some(entry_pos), Some(entry_rot))
             };
 
             do_change_zone(
@@ -1584,8 +1605,14 @@ pub(crate) fn handle_server_housing_message(
                 }),
             );
 
+            let raw_plot_index = (*division as usize) * 30 + (*plot_index as usize);
             let (exit_pos, exit_rot) = if let Some(p) = override_pos {
                 (Some(*p), *override_rot)
+            } else if let Some((p, r)) = target_instance
+                .zone
+                .housing_plot_exit_transform(raw_plot_index)
+            {
+                (Some(p), Some(r))
             } else if let Some(spec) = plot_spec(*territory_type_id, *division, *plot_index) {
                 let (p, r) = nudge_plot_entrance_exit(
                     Position(glam::Vec3A::new(spec.x, spec.y, spec.z)),
@@ -1606,6 +1633,142 @@ pub(crate) fn handle_server_housing_message(
                 *client_id,
                 WarpType::Normal,
             );
+        }
+        HousingSimToServer::WarpToApartmentOutdoor {
+            client_id,
+            actor_id,
+            territory_type_id,
+            ward_index,
+            division,
+        } => {
+            let mut data = data.lock();
+            let mut network = network.lock();
+            let mut game_data = game_data.lock();
+            let lua = lua.lock();
+
+            let pop_id = super::gamedata_ext::apartment_aethernet_pop_range(
+                &mut game_data,
+                *territory_type_id,
+                *division,
+            );
+
+            let (target_instance, needs_init_zone) = begin_change_zone(
+                &mut data,
+                &mut network,
+                &mut game_data,
+                &lua,
+                *territory_type_id,
+                *actor_id,
+                WarpType::Normal,
+                0,
+                Some(InstanceQuery::Ward {
+                    ward: *ward_index as u16,
+                }),
+            );
+
+            let (pos, rot) = pop_id
+                .and_then(|id| target_instance.zone.cached_pop_ranges.get(&id).copied())
+                .or_else(|| {
+                    target_instance
+                        .zone
+                        .find_random_pop_range()
+                        .map(|obj| (pick_point_in_pop_range(obj), 0.0))
+                })
+                .map(|(p, r)| (Some(p), Some(r)))
+                .unwrap_or((None, None));
+
+            do_change_zone(
+                &mut network,
+                target_instance,
+                needs_init_zone,
+                pos,
+                rot,
+                *client_id,
+                WarpType::Normal,
+            );
+        }
+        HousingSimToServer::SpawnLoginInWard {
+            client_id,
+            actor_id,
+            territory_type_id,
+            ward_index,
+            division,
+            plot_index,
+            is_apartment_exit,
+            fallback_pos,
+            fallback_rot,
+        } => {
+            let mut network = network.lock();
+            let mut data = data.lock();
+            let mut game_data = game_data.lock();
+            let lua = lua.lock();
+
+            let apt_pop_id = if *is_apartment_exit {
+                super::gamedata_ext::apartment_aethernet_pop_range(
+                    &mut game_data,
+                    *territory_type_id,
+                    *division,
+                )
+            } else {
+                None
+            };
+
+            let instance = data.ensure_exists_query(
+                &mut game_data,
+                &lua,
+                *territory_type_id,
+                InstanceQuery::Ward {
+                    ward: *ward_index as u16,
+                },
+            );
+            instance.insert_empty_actor(*actor_id);
+
+            let (exit_position, exit_rotation) = if *is_apartment_exit {
+                apt_pop_id
+                    .and_then(|id| instance.zone.cached_pop_ranges.get(&id).copied())
+                    .or_else(|| {
+                        instance
+                            .zone
+                            .find_random_pop_range()
+                            .map(|obj| (pick_point_in_pop_range(obj), 0.0))
+                    })
+                    .unwrap_or((*fallback_pos, *fallback_rot))
+            } else if let Some(plot_idx) = plot_index {
+                let raw_plot = (*division as usize) * 30 + (*plot_idx as usize);
+                instance
+                    .zone
+                    .housing_plot_exit_transform(raw_plot)
+                    .unwrap_or((*fallback_pos, *fallback_rot))
+            } else {
+                (*fallback_pos, *fallback_rot)
+            };
+
+            let msg = FromServer::ChangeZone(
+                exit_position,
+                exit_rotation,
+                instance
+                    .zone
+                    .to_lua_zone(instance.weather_id, instance.query),
+                instance.content_handler_id(),
+            );
+            network.send_to(*client_id, msg, DestinationNetwork::ZoneClients);
+        }
+        HousingSimToServer::SwitchClientEstate {
+            content_id,
+            land_ident,
+            enter_interior,
+        } => {
+            let mut network = network.lock();
+            for (handle, _state) in network.clients.values_mut() {
+                if content_id.is_none_or(|cid| cid == handle.content_id) {
+                    let _ = handle.send(FromServer::HousingSim(
+                        HousingSimFromServer::SwitchActiveEstate {
+                            land_ident: *land_ident,
+                            enter_interior: *enter_interior,
+                        },
+                    ));
+                }
+            }
         }
         HousingSimToServer::BroadcastEstateLivePackets {
             land_ident: _,
@@ -1706,6 +1869,41 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
                 publish_session_snapshot(connection, intended);
             }
         }
+        HousingSimFromServer::SwitchActiveEstate {
+            land_ident,
+            enter_interior,
+        } => {
+            let estate = {
+                let mut db = connection.database.lock();
+                estate_by_land_ident(db.connection_mut(), *land_ident)
+                    .ok()
+                    .flatten()
+            };
+            let Some(est) = estate else {
+                return;
+            };
+
+            let current_zone_id = connection.player_data.volatile.zone_id as u16;
+            let currently_indoors = is_house_interior_territory(current_zone_id)
+                || is_apartment_territory(current_zone_id);
+            let go_indoor = enter_interior.unwrap_or(est.is_apartment || currently_indoors);
+
+            connection.housing_sim.authoritative_ward_context = Some(super::session::WardContext {
+                territory_type_id: est.territory_type_id as u16,
+                ward_index: est.ward_index as u8,
+                division: est.division.clamp(0, 1) as u8,
+            });
+            connection.housing_sim.active_estate = Some(build_selection_from_row(&est, go_indoor));
+            connection.housing_sim.is_owner_authorized = true;
+            rebuild_house_inventory_from_db(connection, &est, go_indoor);
+            send_owned_housing(connection).await;
+
+            if go_indoor {
+                warp_into_estate_interior(connection, &est, None, None).await;
+            } else {
+                warp_to_estate_outdoor(connection, &est, None, None).await;
+            }
+        }
         HousingSimFromServer::PushOverlaySync => {
             let zone_id = connection.player_data.volatile.zone_id as u16;
             let intended =
@@ -1773,14 +1971,75 @@ pub async fn handle_lua_warp_house(connection: &mut ZoneConnection, raw_house_id
     }
 }
 
-/// Handles `LuaTask::HousingExitHouse` triggered from `WarpHousingExitHouse.lua`.
+/// Handles `LuaTask::HousingEnterApartment` triggered from apartment building entrances (`HouFixMansionEntrance_00359.lua`).
+pub async fn handle_lua_enter_apartment(connection: &mut ZoneConnection) {
+    let zone_id = connection.player_data.volatile.zone_id as u16;
+    let content_id = connection.player_data.character.content_id as u64;
+    let (district, ward_index, division) = connection
+        .housing_sim
+        .display_ward_context
+        .map(|c| (c.territory_type_id, c.ward_index, c.division))
+        .unwrap_or((default_district_for_zone(zone_id), 0, 0));
+
+    let existing = {
+        let mut db = connection.database.lock();
+        apartments_in_ward(
+            db.connection_mut(),
+            district,
+            connection.config.world_id,
+            ward_index,
+            division,
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .find(|a| a.owner_content_id == content_id as i64)
+    };
+
+    let estate = existing
+        .or_else(|| ensure_local_apartment_estate(connection, district, ward_index, division, 1));
+
+    if let Some(est) = estate {
+        connection.housing_sim.authoritative_ward_context = Some(super::session::WardContext {
+            territory_type_id: est.territory_type_id as u16,
+            ward_index: est.ward_index as u8,
+            division: est.division.clamp(0, 1) as u8,
+        });
+        connection.housing_sim.active_estate = Some(build_selection_from_row(&est, true));
+        connection.housing_sim.is_owner_authorized = true;
+        send_owned_housing(connection).await;
+        warp_into_estate_interior(connection, &est, None, None).await;
+    } else {
+        connection
+            .send_notice("[Housing] Failed to enter apartment room.")
+            .await;
+    }
+}
+
+/// Handles `LuaTask::HousingExitHouse` triggered from `WarpHousingExitHouse.lua` and `HouFixMansionExit_00362.lua`.
 pub async fn handle_lua_housing_exit(connection: &mut ZoneConnection) {
+    let zone_id = connection.player_data.volatile.zone_id as u16;
+    if is_apartment_lobby_territory(zone_id) || is_apartment_territory(zone_id) {
+        if let Some(est) = load_active_estate(connection)
+            && est.is_apartment
+        {
+            warp_to_estate_outdoor(connection, &est, None, None).await;
+            return;
+        }
+        let (district, ward_index, division) = connection
+            .housing_sim
+            .display_ward_context
+            .filter(|c| c.territory_type_id == default_district_for_zone(zone_id))
+            .map(|c| (c.territory_type_id, c.ward_index, c.division))
+            .unwrap_or((default_district_for_zone(zone_id), 0, 0));
+        warp_to_apartment_outdoor(connection, district, ward_index, division).await;
+        return;
+    }
+
     if let Some(est) = load_active_estate(connection) {
         warp_to_estate_outdoor(connection, &est, None, None).await;
         return;
     }
 
-    let zone_id = connection.player_data.volatile.zone_id as u16;
     let aetheryte_id = city_fallback_aetheryte_for_territory(zone_id);
     let target = {
         let mut gd = connection.game_data.lock();

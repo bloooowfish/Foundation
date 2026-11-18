@@ -433,6 +433,34 @@ where
     changed
 }
 
+/// Returns whether an estate row belongs to a Free Company.
+pub fn is_fc_estate(row: &HousingEstateRow) -> bool {
+    row.owner_type == 1
+        || row.fc_id > 0
+        || (row.flags & (HousingFlag::OWNED_BY_FC.bits() as i32)) != 0
+        || (row.flags & (HousingFlags::OWNED_BY_FC.bits() as i32)) != 0
+}
+
+/// Converts a single `HousingEstateRow` into an `OwnedHousing` `LandData` entry with proper client flags.
+pub fn land_data_for_estate(row: &HousingEstateRow) -> kawari::common::LandData {
+    let flags = if row.is_apartment {
+        let mut f = HousingFlags::PLOT_OWNED | HousingFlags::HOUSE_BUILT;
+        if (row.flags & (HousingFlag::OPEN.bits() as i32)) != 0 {
+            f |= HousingFlags::VISITORS_ALLOWED;
+        }
+        f.bits() as u32
+    } else {
+        let mut f = ward_summary_flags_for_estate(row);
+        f |= HousingFlags::PLOT_OWNED | HousingFlags::HOUSE_BUILT;
+        f.bits() as u32
+    };
+    kawari::common::LandData {
+        id: HouseId::from(row.house_id as u64),
+        flags,
+        unk1: 0,
+    }
+}
+
 /// Builds a `House` entry for `HouseList` from an estate DB row.
 pub fn build_house_list_entry(row: &HousingEstateRow) -> House {
     let stored_ext = StoredHouseExterior::from_json(&row.exterior_json);
@@ -443,7 +471,7 @@ pub fn build_house_list_entry(row: &HousingEstateRow) -> House {
     if (row.flags & (HousingFlag::OPEN.bits() as i32)) != 0 {
         flags |= HousingFlag::OPEN;
     }
-    if (row.flags & (HousingFlag::OWNED_BY_FC.bits() as i32)) != 0 {
+    if is_fc_estate(row) {
         flags |= HousingFlag::OWNED_BY_FC;
     }
 
@@ -458,26 +486,36 @@ pub fn build_house_list_entry(row: &HousingEstateRow) -> House {
     }
 }
 
-/// Builds the full `OwnedHousing` tuple `(owned_array, apartment)` from character-owned estate rows.
+/// Builds the `OwnedHousing` `(owned_array, apartment)` tuple by projecting `preferred_active` first so
+/// any number of test plots/apartments owned by a character can unlock the client Housing menu when active.
 pub fn build_owned_housing_data(
     estates: &[HousingEstateRow],
+    preferred_active: Option<&HousingEstateRow>,
 ) -> ([kawari::common::LandData; 5], kawari::common::LandData) {
     let mut owned = [kawari::common::LandData::default(); 5];
     let mut apartment = kawari::common::LandData::default();
 
-    for estate in estates {
-        let ld = kawari::common::LandData {
-            id: HouseId::from(estate.house_id as u64),
-            flags: estate.flags as u32,
-            unk1: 0,
-        };
-        if estate.is_apartment {
-            apartment = ld;
-        } else if estate.flags & (HousingFlag::OWNED_BY_FC.bits() as i32) != 0 {
-            owned[0] = ld;
+    let mut place_into = |row: &HousingEstateRow| {
+        let ld = land_data_for_estate(row);
+        if row.is_apartment {
+            if apartment.id == HouseId::default() {
+                apartment = ld;
+            }
+        } else if is_fc_estate(row) {
+            if owned[0].id == HouseId::default() {
+                owned[0] = ld;
+            }
         } else if owned[1].id == HouseId::default() {
             owned[1] = ld;
         }
+    };
+
+    if let Some(active) = preferred_active {
+        place_into(active);
+    }
+
+    for estate in estates {
+        place_into(estate);
     }
     (owned, apartment)
 }
@@ -496,7 +534,7 @@ pub fn ward_summary_flags_for_estate(row: &HousingEstateRow) -> HousingFlags {
     if !packet_ext.is_under_construction() {
         f |= HousingFlags::HOUSE_BUILT;
     }
-    if row.flags & (HousingFlag::OWNED_BY_FC.bits() as i32) != 0 {
+    if is_fc_estate(row) {
         f |= HousingFlags::OWNED_BY_FC;
     }
     f
@@ -679,5 +717,85 @@ mod tests {
         assert_eq!(lists[5].furniture[92].id, 777);
         assert_eq!(lists[5].furniture[92].material_item_key(), 1500);
         assert_eq!(lists[5].furniture[92].stain, 9);
+    }
+
+    #[test]
+    fn build_owned_housing_data_dynamically_projects_active_estate_for_single_character() {
+        let mut db = crate::WorldDatabase::new_in_memory();
+        let conn = db.connection_mut();
+        let mist_small = super::super::db::ensure_estate(
+            conn,
+            &super::super::db::EnsureEstateSpec {
+                territory_type_id: 339,
+                world_id: 79,
+                ward_index: 0,
+                division: 0,
+                plot_index: 2,
+                room_number: 0,
+                is_apartment: false,
+                plot_size: PlotSize::Small,
+                is_fc: false,
+                owner_content_id: 42,
+                owner_name: "Tester".to_string(),
+                estate_name: "Mist Small".to_string(),
+                exterior_json: StoredHouseExterior::default().to_json(),
+                interior_json: StoredHouseInterior::default().to_json(),
+            },
+        )
+        .unwrap();
+        let shiro_large = super::super::db::ensure_estate(
+            conn,
+            &super::super::db::EnsureEstateSpec {
+                territory_type_id: 641,
+                world_id: 79,
+                ward_index: 0,
+                division: 0,
+                plot_index: 0,
+                room_number: 0,
+                is_apartment: false,
+                plot_size: PlotSize::Large,
+                is_fc: false,
+                owner_content_id: 42,
+                owner_name: "Tester".to_string(),
+                estate_name: "Shiro Large".to_string(),
+                exterior_json: StoredHouseExterior::default().to_json(),
+                interior_json: StoredHouseInterior::default().to_json(),
+            },
+        )
+        .unwrap();
+        let emp_apt = super::super::db::ensure_estate(
+            conn,
+            &super::super::db::EnsureEstateSpec {
+                territory_type_id: 979,
+                world_id: 79,
+                ward_index: 0,
+                division: 1,
+                plot_index: 0,
+                room_number: 3,
+                is_apartment: true,
+                plot_size: PlotSize::Small,
+                is_fc: false,
+                owner_content_id: 42,
+                owner_name: "Tester".to_string(),
+                estate_name: "Emp Apt".to_string(),
+                exterior_json: "{}".to_string(),
+                interior_json: StoredHouseInterior::default().to_json(),
+            },
+        )
+        .unwrap();
+
+        let all = super::super::db::owned_estates_for_character(conn, 42).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let (owned_a, apt_a) = build_owned_housing_data(&all, Some(&mist_small));
+        assert_eq!(owned_a[1].id, HouseId::from(mist_small.house_id as u64));
+        assert_eq!(owned_a[1].flags & 0x0B, 0x0B);
+        assert_eq!(apt_a.id, HouseId::from(emp_apt.house_id as u64));
+        assert_eq!(apt_a.flags & 0x0B, 0x0B);
+
+        let (owned_b, apt_b) = build_owned_housing_data(&all, Some(&shiro_large));
+        assert_eq!(owned_b[1].id, HouseId::from(shiro_large.house_id as u64));
+        assert_eq!(owned_b[1].flags & 0x0B, 0x0B);
+        assert_eq!(apt_b.id, HouseId::from(emp_apt.house_id as u64));
     }
 }

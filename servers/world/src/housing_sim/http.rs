@@ -25,11 +25,14 @@ use super::db::{
     save_estate,
 };
 use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
-use super::flows::apply_preset_layout_with_catalog;
+use super::flows::{apply_preset_layout_with_catalog, target_indoor_territory_for_estate};
 use super::gamedata_ext::{
     display_name_for_renovation, normalize_district_style_name, renovation_row_for_style_and_size,
 };
-use super::plots::{default_district_for_zone, plot_spec};
+use super::plots::{
+    canonical_plot_for_district_and_size, default_district_for_zone, parse_district_territory,
+    plot_spec,
+};
 use super::remake_place::{
     PresetFileSummary, PresetScope, ReMakePlaceLayout, ReMakePlacePreviewReport,
     export_estate_to_layout, parse_layout_bytes, prepare_apply_layout, read_layout_file,
@@ -55,6 +58,7 @@ pub fn router(hub: Arc<HousingSimHub>) -> Router {
     Router::new()
         .route("/status", get(status_handler))
         .route("/events", get(events_handler))
+        .route("/session/switch", post(switch_session_handler))
         .route("/estates", get(list_estates_handler))
         .route("/estates/ensure", post(ensure_estate_handler))
         .route(
@@ -187,11 +191,12 @@ async fn list_estates_handler(
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct EnsureEstateRequest {
+    pub district: Option<String>,
     pub territory_type_id: u16,
     pub world_id: u16,
     pub ward_index: u8,
     pub division: u8,
-    pub plot_index: u8,
+    pub plot_index: Option<u8>,
     pub room_number: u16,
     pub is_apartment: bool,
     pub plot_size: Option<u8>,
@@ -204,11 +209,12 @@ pub struct EnsureEstateRequest {
 impl Default for EnsureEstateRequest {
     fn default() -> Self {
         Self {
+            district: None,
             territory_type_id: 340,
             world_id: kawari::config::get_config().world.world_id,
             ward_index: 0,
             division: 0,
-            plot_index: 0,
+            plot_index: None,
             room_number: 0,
             is_apartment: false,
             plot_size: None,
@@ -220,24 +226,41 @@ impl Default for EnsureEstateRequest {
     }
 }
 
-async fn ensure_estate_handler(
-    State(hub): State<Arc<HousingSimHub>>,
-    Json(req): Json<EnsureEstateRequest>,
-) -> ApiResult<HousingEstateRow> {
+fn ensure_estate_row_with_req(
+    hub: &HousingSimHub,
+    req: &EnsureEstateRequest,
+) -> Result<HousingEstateRow, (StatusCode, Json<ApiErrorBody>)> {
     let catalog = hub.resolve_catalog();
-    let district = default_district_for_zone(req.territory_type_id);
-    let size = req
-        .plot_size
-        .and_then(PlotSize::from_repr)
-        .unwrap_or_else(|| {
-            if req.is_apartment {
-                PlotSize::Small
-            } else {
-                plot_spec(district, req.division, req.plot_index)
-                    .map(|p| p.size)
+    let raw_territory = req
+        .district
+        .as_deref()
+        .and_then(parse_district_territory)
+        .unwrap_or(req.territory_type_id);
+    let district = default_district_for_zone(raw_territory);
+    let division = req.division.clamp(0, 1);
+
+    let (plot_index, size) = if req.is_apartment {
+        (0u8, PlotSize::Small)
+    } else if let Some(explicit_plot) = req.plot_index {
+        let p = explicit_plot % 30;
+        let sz = req
+            .plot_size
+            .and_then(PlotSize::from_repr)
+            .unwrap_or_else(|| {
+                plot_spec(district, division, p)
+                    .map(|s| s.size)
                     .unwrap_or(PlotSize::Small)
-            }
-        });
+            });
+        (p, sz)
+    } else {
+        let sz = req
+            .plot_size
+            .and_then(PlotSize::from_repr)
+            .unwrap_or(PlotSize::Small);
+        let p = canonical_plot_for_district_and_size(district, division, sz).unwrap_or(0);
+        (p, sz)
+    };
+
     let exterior = if req.is_apartment {
         StoredHouseExterior::default()
     } else {
@@ -249,11 +272,11 @@ async fn ensure_estate_handler(
     let spec = EnsureEstateSpec {
         territory_type_id: district,
         world_id: req.world_id,
-        ward_index: req.ward_index,
-        division: req.division,
-        plot_index: req.plot_index,
+        ward_index: req.ward_index.min(29),
+        division,
+        plot_index,
         room_number: if req.is_apartment {
-            req.room_number.max(1)
+            req.room_number.clamp(1, 90)
         } else {
             0
         },
@@ -262,9 +285,9 @@ async fn ensure_estate_handler(
         is_fc: req.is_fc,
         owner_content_id: req.owner_content_id,
         owner_name: req.owner_name.clone(),
-        estate_name: req.estate_name.unwrap_or_else(|| {
+        estate_name: req.estate_name.clone().unwrap_or_else(|| {
             if req.is_apartment {
-                format!("{}'s Apt #{}", req.owner_name, req.room_number.max(1))
+                format!("{}'s Apt #{}", req.owner_name, req.room_number.clamp(1, 90))
             } else {
                 format!("{}'s Estate", req.owner_name)
             }
@@ -274,8 +297,15 @@ async fn ensure_estate_handler(
     };
 
     let mut db = hub.database.lock();
-    let row = ensure_estate(db.connection_mut(), &spec)
-        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    ensure_estate(db.connection_mut(), &spec)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn ensure_estate_handler(
+    State(hub): State<Arc<HousingSimHub>>,
+    Json(req): Json<EnsureEstateRequest>,
+) -> ApiResult<HousingEstateRow> {
+    let row = ensure_estate_row_with_req(&hub, &req)?;
     hub.emit_event(HousingSseEvent {
         kind: "estate_ensured".to_string(),
         land_ident: Some(row.land_ident),
@@ -286,6 +316,115 @@ async fn ensure_estate_handler(
         session: None,
     });
     Ok(Json(row))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct SwitchSessionRequest {
+    pub land_ident: Option<i32>,
+    pub district: Option<String>,
+    pub territory_type_id: Option<u16>,
+    pub world_id: Option<u16>,
+    pub ward_index: Option<u8>,
+    pub division: Option<u8>,
+    pub plot_index: Option<u8>,
+    pub room_number: Option<u16>,
+    pub is_apartment: Option<bool>,
+    pub plot_size: Option<u8>,
+    pub is_fc: Option<bool>,
+    pub enter_interior: Option<bool>,
+    pub owner_content_id: Option<u64>,
+    pub owner_name: Option<String>,
+    pub estate_name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SwitchSessionResponse {
+    pub estate: HousingEstateRow,
+    pub target_indoor_territory: u16,
+    pub online_sessions_notified: usize,
+}
+
+async fn switch_session_handler(
+    State(hub): State<Arc<HousingSimHub>>,
+    Json(req): Json<SwitchSessionRequest>,
+) -> ApiResult<SwitchSessionResponse> {
+    let sessions = hub.list_online_sessions();
+    let active_session = sessions.first();
+
+    let estate = if let Some(ident) = req.land_ident {
+        let mut db = hub.database.lock();
+        estate_by_land_ident(db.connection_mut(), ident)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "Estate not found"))?
+    } else {
+        let territory_type_id = req
+            .district
+            .as_deref()
+            .and_then(parse_district_territory)
+            .or(req.territory_type_id)
+            .or_else(|| active_session.map(|s| default_district_for_zone(s.zone_id)))
+            .unwrap_or(340);
+        let ensure_req = EnsureEstateRequest {
+            district: req.district.clone(),
+            territory_type_id,
+            world_id: req
+                .world_id
+                .unwrap_or_else(|| kawari::config::get_config().world.world_id),
+            ward_index: req
+                .ward_index
+                .or_else(|| {
+                    active_session.and_then(|s| s.display_ward_context.map(|w| w.ward_index))
+                })
+                .unwrap_or(0),
+            division: req.division.unwrap_or(0),
+            plot_index: req.plot_index,
+            room_number: req.room_number.unwrap_or(1),
+            is_apartment: req.is_apartment.unwrap_or(false),
+            plot_size: req.plot_size,
+            is_fc: req.is_fc.unwrap_or(false),
+            owner_content_id: req
+                .owner_content_id
+                .or_else(|| active_session.map(|s| s.content_id))
+                .unwrap_or(1),
+            owner_name: req
+                .owner_name
+                .clone()
+                .or_else(|| active_session.map(|s| s.character_name.clone()))
+                .unwrap_or_else(|| "Simulator".to_string()),
+            estate_name: req.estate_name.clone(),
+        };
+        ensure_estate_row_with_req(&hub, &ensure_req)?
+    };
+
+    let target_indoor_territory = target_indoor_territory_for_estate(&estate);
+    let target_content_id = req
+        .owner_content_id
+        .or_else(|| active_session.map(|s| s.content_id));
+
+    hub.emit_event(HousingSseEvent {
+        kind: "session_switched".to_string(),
+        land_ident: Some(estate.land_ident),
+        message: format!(
+            "Switched active estate to '{}' (land_ident={}, territory={})",
+            estate.estate_name, estate.land_ident, estate.territory_type_id
+        ),
+        session: None,
+    });
+    hub.send_to_server(ToServer::HousingSim(
+        HousingSimToServer::SwitchClientEstate {
+            content_id: target_content_id,
+            land_ident: estate.land_ident,
+            enter_interior: req.enter_interior,
+        },
+    ))
+    .await;
+
+    Ok(Json(SwitchSessionResponse {
+        estate,
+        target_indoor_territory,
+        online_sessions_notified: sessions.len(),
+    }))
 }
 
 #[derive(Serialize)]
@@ -972,7 +1111,7 @@ mod tests {
                 world_id: 79,
                 ward_index: 0,
                 division: 0,
-                plot_index: 0,
+                plot_index: Some(0),
                 plot_size: Some(2),
                 owner_content_id: 42,
                 owner_name: "Tester".to_string(),
@@ -1055,5 +1194,88 @@ mod tests {
             .unwrap()
             .0;
         assert!(detail.furniture.is_empty());
+    }
+
+    #[tokio::test]
+    async fn http_session_switch_creates_and_switches_across_districts_and_sizes_for_one_character()
+    {
+        let (hub, mut rx) = test_hub();
+
+        let res_mist_large = switch_session_handler(
+            State(hub.clone()),
+            Json(SwitchSessionRequest {
+                district: Some("mist".to_string()),
+                plot_size: Some(2),
+                enter_interior: Some(true),
+                owner_content_id: Some(42),
+                owner_name: Some("Tester".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(res_mist_large.estate.territory_type_id, 339);
+        assert_eq!(res_mist_large.estate.plot_size, 2);
+        assert_eq!(res_mist_large.target_indoor_territory, 284);
+        assert_eq!(
+            plot_spec(339, 0, res_mist_large.estate.plot_index as u8)
+                .unwrap()
+                .size,
+            PlotSize::Large
+        );
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ToServer::HousingSim(HousingSimToServer::SwitchClientEstate {
+                content_id: Some(42),
+                land_ident,
+                enter_interior: Some(true),
+            }) if land_ident == res_mist_large.estate.land_ident
+        ));
+
+        let res_shiro_small = switch_session_handler(
+            State(hub.clone()),
+            Json(SwitchSessionRequest {
+                district: Some("shirogane".to_string()),
+                plot_size: Some(0),
+                enter_interior: Some(true),
+                owner_content_id: Some(42),
+                owner_name: Some("Tester".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(res_shiro_small.estate.territory_type_id, 641);
+        assert_eq!(res_shiro_small.estate.plot_size, 0);
+        assert_eq!(res_shiro_small.target_indoor_territory, 649);
+        assert_eq!(
+            plot_spec(641, 0, res_shiro_small.estate.plot_index as u8)
+                .unwrap()
+                .size,
+            PlotSize::Small
+        );
+
+        let res_emp_apt = switch_session_handler(
+            State(hub.clone()),
+            Json(SwitchSessionRequest {
+                district: Some("엠피레움".to_string()),
+                is_apartment: Some(true),
+                room_number: Some(7),
+                owner_content_id: Some(42),
+                owner_name: Some("Tester".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(res_emp_apt.estate.territory_type_id, 979);
+        assert!(res_emp_apt.estate.is_apartment);
+        assert_eq!(res_emp_apt.target_indoor_territory, 999);
+
+        let all = list_estates_handler(State(hub)).await.unwrap().0;
+        assert_eq!(all.len(), 3);
     }
 }

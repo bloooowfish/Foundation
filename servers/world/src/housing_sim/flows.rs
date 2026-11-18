@@ -38,13 +38,13 @@ use super::gamedata_ext::{
 use super::overlays::{HousingOverlayKey, HousingOverlayObject, HousingOverlayScope};
 use super::plots::{
     apartment_territory_for_district, city_fallback_aetheryte_for_territory,
-    default_district_for_zone, is_apartment_territory, is_house_interior_territory,
-    nearest_plot_to_position, plot_spec,
+    default_district_for_zone, is_apartment_lobby_territory, is_apartment_territory,
+    is_house_interior_territory, nearest_plot_to_position, plot_spec,
 };
 use super::remake_place::PresetScope;
 use super::session::{
-    ActiveEstateSelection, HousingSimToServer, HousingSseEvent, OnlineSessionSnapshot, ReloadMode,
-    WardContext,
+    ActiveEstateSelection, HousingSimToServer, HousingSseEvent, LoginWardSpawn,
+    OnlineSessionSnapshot, ReloadMode, WardContext,
 };
 
 const MAX_INITIAL_INDOOR_FURNITURE_LISTS: usize = 3;
@@ -86,29 +86,76 @@ pub fn publish_session_snapshot(connection: &ZoneConnection, intended_use: Terri
     hub.update_session(connection.id, snap);
 }
 
-/// Ensures invalid/orphaned indoor login positions return cleanly to the estate front gate or city aetheryte.
+/// Ensures invalid/orphaned indoor login positions return cleanly to the estate front gate or apartment entrance,
+/// and preserves outdoor ward spawns inside the right `Ward` instance.
 pub fn normalize_indoor_login_location(connection: &mut ZoneConnection) {
+    connection.housing_sim.login_ward_spawn = None;
     let zone_id = connection.player_data.volatile.zone_id as u16;
-    if !is_house_interior_territory(zone_id) && !is_apartment_territory(zone_id) {
+    let in_indoor_house = is_house_interior_territory(zone_id);
+    let in_apartment_or_lobby =
+        is_apartment_territory(zone_id) || is_apartment_lobby_territory(zone_id);
+    let in_outdoor_ward = internal_housing_row(zone_id).is_some();
+
+    if !in_indoor_house && !in_apartment_or_lobby && !in_outdoor_ward {
         return;
     }
 
     let content_id = connection.player_data.character.content_id as u64;
-    let target_estate = {
+    let estates = {
         let mut db = connection.database.lock();
-        let conn = db.connection_mut();
-        let estates = owned_estates_for_character(conn, content_id).unwrap_or_default();
-        if is_apartment_territory(zone_id) {
-            estates.into_iter().find(|e| e.is_apartment)
-        } else {
-            estates.into_iter().find(|e| !e.is_apartment)
-        }
+        owned_estates_for_character(db.connection_mut(), content_id).unwrap_or_default()
     };
+
+    if in_outdoor_ward {
+        let matched = estates
+            .iter()
+            .find(|e| e.territory_type_id as u16 == zone_id && !e.is_apartment)
+            .or_else(|| {
+                estates
+                    .iter()
+                    .find(|e| e.territory_type_id as u16 == zone_id)
+            });
+        let (ward_index, division) = matched
+            .map(|e| (e.ward_index as u8, e.division.clamp(0, 1) as u8))
+            .unwrap_or((0, 0));
+        connection.entering_subdivision = division != 0;
+        connection.housing_sim.login_ward_spawn = Some(LoginWardSpawn {
+            territory_type_id: zone_id,
+            ward_index,
+            division,
+            plot_index: None,
+            is_apartment_exit: false,
+        });
+        return;
+    }
+
+    let expected_district = default_district_for_zone(zone_id);
+    let target_estate = estates
+        .iter()
+        .find(|e| {
+            e.is_apartment == in_apartment_or_lobby
+                && e.territory_type_id as u16 == expected_district
+        })
+        .or_else(|| {
+            estates
+                .iter()
+                .find(|e| e.is_apartment == in_apartment_or_lobby)
+        })
+        .cloned();
 
     if let Some(estate) = target_estate {
         let district = estate.territory_type_id as u16;
-        if let Some(spec) = plot_spec(district, estate.division as u8, estate.plot_index as u8) {
-            connection.player_data.volatile.zone_id = district as i32;
+        let ward_index = estate.ward_index as u8;
+        let division = estate.division.clamp(0, 1) as u8;
+        let plot_index = estate.plot_index.clamp(0, 29) as u8;
+        connection.player_data.volatile.zone_id = district as i32;
+        connection.entering_subdivision = division != 0;
+        connection.housing_sim.active_estate = Some(build_selection_from_row(&estate, false));
+        connection.housing_sim.is_owner_authorized = true;
+
+        if !estate.is_apartment
+            && let Some(spec) = plot_spec(district, division, plot_index)
+        {
             let (exit_pos, exit_rot) = super::plots::nudge_plot_entrance_exit(
                 Position(glam::Vec3A::new(spec.x, spec.y, spec.z)),
                 spec.rotation,
@@ -116,29 +163,65 @@ pub fn normalize_indoor_login_location(connection: &mut ZoneConnection) {
             );
             connection.player_data.volatile.position = exit_pos;
             connection.player_data.volatile.rotation = exit_rot as f64;
-            return;
         }
+
+        connection.housing_sim.login_ward_spawn = Some(LoginWardSpawn {
+            territory_type_id: district,
+            ward_index,
+            division,
+            plot_index: (!estate.is_apartment && !in_apartment_or_lobby).then_some(plot_index),
+            is_apartment_exit: estate.is_apartment || in_apartment_or_lobby,
+        });
+        return;
     }
 
-    // Fallback to matching outdoor district entrance or a safe town fallback.
-    let fallback_district = default_district_for_zone(zone_id);
+    // Fallback to matching outdoor district entrance when no persisted estate record exists yet.
     let _ = city_fallback_aetheryte_for_territory(zone_id);
-    if let Some(spec) = plot_spec(fallback_district, 0, 0) {
-        connection.player_data.volatile.zone_id = fallback_district as i32;
-        connection.player_data.volatile.position =
-            Position(glam::Vec3A::new(spec.x, spec.y, spec.z));
-        connection.player_data.volatile.rotation = spec.rotation as f64;
+    connection.player_data.volatile.zone_id = expected_district as i32;
+    connection.entering_subdivision = false;
+    if !in_apartment_or_lobby && let Some(spec) = plot_spec(expected_district, 0, 0) {
+        let (exit_pos, exit_rot) = super::plots::nudge_plot_entrance_exit(
+            Position(glam::Vec3A::new(spec.x, spec.y, spec.z)),
+            spec.rotation,
+            8.0,
+        );
+        connection.player_data.volatile.position = exit_pos;
+        connection.player_data.volatile.rotation = exit_rot as f64;
     }
+    connection.housing_sim.login_ward_spawn = Some(LoginWardSpawn {
+        territory_type_id: expected_district,
+        ward_index: 0,
+        division: 0,
+        plot_index: (!in_apartment_or_lobby).then_some(0),
+        is_apartment_exit: in_apartment_or_lobby,
+    });
 }
 
-/// Sends `OwnedHousing` packet from persistent DB (`housing_estates`).
+/// Sends `OwnedHousing` packet from persistent DB (`housing_estates`), dynamically projecting `active_estate`
+/// so a single character can build/remodel unlimited test plots and apartments across districts and sizes.
 pub async fn send_owned_housing(connection: &mut ZoneConnection) {
     let content_id = connection.player_data.character.content_id as u64;
-    let owned_estates = {
+    let active_ident = connection
+        .housing_sim
+        .active_estate
+        .as_ref()
+        .map(|s| s.land_ident);
+    let is_authorized = connection.housing_sim.is_owner_authorized;
+
+    let (owned_estates, preferred_active) = {
         let mut db = connection.database.lock();
-        owned_estates_for_character(db.connection_mut(), content_id).unwrap_or_default()
+        let conn = db.connection_mut();
+        let estates = owned_estates_for_character(conn, content_id).unwrap_or_default();
+        let active_row = active_ident
+            .and_then(|ident| estate_by_land_ident(conn, ident).ok().flatten())
+            .filter(|est| {
+                is_authorized
+                    || est.owner_content_id == 0
+                    || est.owner_content_id == content_id as i64
+            });
+        (estates, active_row)
     };
-    let (owned, apartment) = build_owned_housing_data(&owned_estates);
+    let (owned, apartment) = build_owned_housing_data(&owned_estates, preferred_active.as_ref());
     let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::OwnedHousing {
         unk1: owned[0],
         unk2: owned[1],
@@ -491,10 +574,36 @@ pub async fn init_outdoor_ward(connection: &mut ZoneConnection, zone_id: u16, wa
         )
     };
 
-    // Update authoritative outdoor plot context if player owns an estate in this ward.
-    let owned_in_ward = ward_estates
-        .iter()
-        .find(|e| e.owner_content_id == content_id as i64)
+    // Preserve the already-selected plot in this ward if owned/authorized; otherwise select one in division/ward.
+    let active_ident = connection
+        .housing_sim
+        .active_estate
+        .as_ref()
+        .map(|s| s.land_ident);
+    let is_authorized_row =
+        |e: &&HousingEstateRow| e.owner_content_id == 0 || e.owner_content_id == content_id as i64;
+    let owned_in_ward = active_ident
+        .and_then(|ident| {
+            ward_estates
+                .iter()
+                .find(|e| e.land_ident == ident && is_authorized_row(e))
+        })
+        .or_else(|| {
+            ward_estates
+                .iter()
+                .find(|e| e.division as u8 == division && is_authorized_row(e))
+        })
+        .or_else(|| ward_estates.iter().find(|e| is_authorized_row(e)))
+        .or_else(|| {
+            active_ident.and_then(|ident| {
+                all_owned.iter().find(|e| {
+                    !e.is_apartment
+                        && e.land_ident == ident
+                        && e.territory_type_id as u16 == zone_id
+                        && e.ward_index as u8 == ward
+                })
+            })
+        })
         .or_else(|| {
             all_owned.iter().find(|e| {
                 !e.is_apartment
@@ -582,6 +691,7 @@ pub async fn init_outdoor_ward(connection: &mut ZoneConnection, zone_id: u16, wa
         }
     }
 
+    send_owned_housing(connection).await;
     publish_session_snapshot(connection, TerritoryIntendedUse::HousingOutdoor);
 }
 
@@ -627,6 +737,7 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
     connection.housing_sim.is_owner_authorized =
         estate.owner_content_id == 0 || estate.owner_content_id == content_id as i64;
     rebuild_house_inventory_from_db(connection, &estate, true);
+    send_owned_housing(connection).await;
 
     let plot_size = PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default();
     let stored_interior = StoredHouseInterior::from_json(&estate.interior_json);
@@ -889,7 +1000,30 @@ pub async fn warp_into_estate_interior(
         .await;
 }
 
-/// Warps the player out to `estate`'s outdoor ward plot (with optional exact coordinates or 8m front-door exit nudge).
+/// Warps the player out to the Apartment Building entrance in `(territory_type_id, ward_index, division)`.
+pub async fn warp_to_apartment_outdoor(
+    connection: &mut ZoneConnection,
+    territory_type_id: u16,
+    ward_index: u8,
+    division: u8,
+) {
+    let div = division.clamp(0, 1);
+    connection.entering_subdivision = div != 0;
+    connection
+        .handle
+        .send(ToServer::HousingSim(
+            HousingSimToServer::WarpToApartmentOutdoor {
+                client_id: connection.id,
+                actor_id: connection.player_data.character.actor_id,
+                territory_type_id,
+                ward_index,
+                division: div,
+            },
+        ))
+        .await;
+}
+
+/// Warps the player out to `estate`'s outdoor ward plot (or Apartment Building entrance when `is_apartment` is true).
 pub async fn warp_to_estate_outdoor(
     connection: &mut ZoneConnection,
     estate: &HousingEstateRow,
@@ -897,6 +1031,16 @@ pub async fn warp_to_estate_outdoor(
     override_rot: Option<f32>,
 ) {
     let division = estate.division.clamp(0, 1) as u8;
+    if estate.is_apartment && override_pos.is_none() {
+        warp_to_apartment_outdoor(
+            connection,
+            estate.territory_type_id as u16,
+            estate.ward_index as u8,
+            division,
+        )
+        .await;
+        return;
+    }
     connection.entering_subdivision = division != 0;
     connection
         .handle
@@ -1251,6 +1395,7 @@ pub async fn send_housing_placard_info(
             connection.housing_sim.active_estate = Some(build_selection_from_row(est, false));
             connection.housing_sim.is_owner_authorized = true;
             rebuild_house_inventory_from_db(connection, est, false);
+            send_owned_housing(connection).await;
         }
 
         let ext = StoredHouseExterior::from_json(&est.exterior_json).to_packet_exterior();

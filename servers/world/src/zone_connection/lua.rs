@@ -826,6 +826,9 @@ impl ZoneConnection {
                 LuaTask::WarpHouse { house_id } => {
                     crate::housing_sim::packets::handle_lua_warp_house(self, *house_id).await;
                 }
+                LuaTask::HousingEnterApartment => {
+                    crate::housing_sim::packets::handle_lua_enter_apartment(self).await;
+                }
                 LuaTask::HousingExitHouse => {
                     crate::housing_sim::packets::handle_lua_housing_exit(self).await;
                 }

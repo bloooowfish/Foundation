@@ -49,6 +49,16 @@ pub struct WardContext {
     pub division: u8,
 }
 
+/// Pending login spawn target inside a residential ward (house gate, apartment building, or saved ward coordinates).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoginWardSpawn {
+    pub territory_type_id: u16,
+    pub ward_index: u8,
+    pub division: u8,
+    pub plot_index: Option<u8>,
+    pub is_apartment_exit: bool,
+}
+
 /// Per-connection runtime state stored in `ZoneConnection.housing_sim`.
 #[derive(Debug, Default)]
 pub struct HousingSimSession {
@@ -61,6 +71,7 @@ pub struct HousingSimSession {
     pub pending_remodel_container: Option<ContainerType>,
     pub pending_placard_location: Option<(u8, u8)>,
     pub last_entrance_plot: Option<(u8, u8)>,
+    pub login_ward_spawn: Option<LoginWardSpawn>,
     pub is_owner_authorized: bool,
 }
 
@@ -132,6 +143,29 @@ pub enum HousingSimToServer {
         override_pos: Option<Position>,
         override_rot: Option<f32>,
     },
+    WarpToApartmentOutdoor {
+        client_id: ClientId,
+        actor_id: ObjectId,
+        territory_type_id: u16,
+        ward_index: u8,
+        division: u8,
+    },
+    SpawnLoginInWard {
+        client_id: ClientId,
+        actor_id: ObjectId,
+        territory_type_id: u16,
+        ward_index: u8,
+        division: u8,
+        plot_index: Option<u8>,
+        is_apartment_exit: bool,
+        fallback_pos: Position,
+        fallback_rot: f32,
+    },
+    SwitchClientEstate {
+        content_id: Option<u64>,
+        land_ident: i32,
+        enter_interior: Option<bool>,
+    },
     BroadcastEstateLivePackets {
         land_ident: i32,
         indoors_only: bool,
@@ -153,6 +187,10 @@ pub enum HousingSimFromServer {
         mode: ReloadMode,
         preserve_player_pos: bool,
         force_enter: bool,
+    },
+    SwitchActiveEstate {
+        land_ident: i32,
+        enter_interior: Option<bool>,
     },
     PushOverlaySync,
 }

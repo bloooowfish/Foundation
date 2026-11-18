@@ -99,7 +99,7 @@ pub struct WorldServer {
 
 impl WorldServer {
     /// Ensures an instance exists, and creates one if not found.
-    fn ensure_exists_query(
+    pub(crate) fn ensure_exists_query(
         &mut self,
         game_data: &mut GameData,
         lua: &KawariLua,

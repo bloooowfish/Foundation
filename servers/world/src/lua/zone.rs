@@ -28,6 +28,8 @@ pub struct LuaZone {
     // NOTE: These are here to be accessed in Lua via the injected BASE_ID
     pub cached_npc_base_ids: HashMap<ObjectId, u32>,
     pub cached_eobj_base_ids: HashMap<u32, u32>,
+    pub cached_housing_entrance_plots: HashMap<u32, u8>,
+    pub cached_housing_plots: Vec<(Position, f32)>,
     pub cached_pop_ranges: HashMap<u32, (Position, f32)>,
 }
 

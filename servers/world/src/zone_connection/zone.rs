@@ -456,8 +456,13 @@ impl ZoneConnection {
                     self.entering_subdivision = true;
                 }
             }
-            self.populate_ward(self.player_data.volatile.zone_id as u16, ward)
-                .await;
+            let current_zone_id = self.player_data.volatile.zone_id as u16;
+            crate::housing_sim::flows::init_outdoor_ward(self, current_zone_id, ward).await;
+            crate::housing_sim::flows::sync_current_overlays_for_connection(
+                self,
+                TerritoryIntendedUse::HousingOutdoor,
+            )
+            .await;
         }
     }
 

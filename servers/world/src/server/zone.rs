@@ -66,6 +66,8 @@ pub struct MapRange {
     pub trigger_box_shape: TriggerBoxShape,
     /// Position of this range in the world.
     pub position: Vec3A,
+    /// Rotation angle (radians) of this range in the world.
+    pub rotation: f32,
     /// Relative scale of this range.
     pub scale: Vec3A,
     /// Whether this map range represents a sanctuary.
@@ -84,9 +86,10 @@ pub struct MapRange {
     pub fate: Option<u32>,
 }
 
-#[derive(Debug)]
-struct HousingPlot {
-    entrance_position: Vec3A,
+#[derive(Debug, Clone, Copy)]
+pub struct HousingPlot {
+    pub entrance_position: Vec3A,
+    pub entrance_rotation: f32,
 }
 
 /// Represents a loaded zone
@@ -108,7 +111,8 @@ pub struct Zone {
     cached_treasure: HashMap<u32, SpawnTreasure>,
     layer_set: i32,
     bg_path: String,
-    cached_housing_plots: Vec<HousingPlot>,
+    pub cached_housing_plots: Vec<HousingPlot>,
+    pub cached_housing_entrance_plots: HashMap<u32, u8>,
     cached_eobj_base_ids: HashMap<u32, u32>,
     pub cached_pop_ranges: HashMap<u32, (Position, f32)>,
     pub cached_paths: HashMap<u32, ServerPathInstanceObject>,
@@ -246,6 +250,7 @@ impl Zone {
                             zone.map_ranges.push(MapRange {
                                 trigger_box_shape: map_range.parent_data.trigger_box_shape,
                                 position: translation.into(),
+                                rotation: euler_to_direction(rotation.to_euler(EulerRot::XYZ)),
                                 scale: scale.into(),
                                 sanctuary: map_range.rest_bonus_enabled,
                                 instance_id: object.instance_id,
@@ -411,6 +416,7 @@ impl Zone {
 
                     zone.cached_housing_plots.push(HousingPlot {
                         entrance_position: map_range.position,
+                        entrance_rotation: map_range.rotation,
                     });
                 }
             }
@@ -476,6 +482,16 @@ impl Zone {
         None
     }
 
+    /// Returns the front-gate street exit `(position, rotation)` nudged 8 yalms forward from the plot's `MapRange`.
+    pub fn housing_plot_exit_transform(&self, raw_plot_index: usize) -> Option<(Position, f32)> {
+        let plot = self.cached_housing_plots.get(raw_plot_index)?;
+        Some(crate::housing_sim::plots::nudge_plot_entrance_exit(
+            Position(plot.entrance_position),
+            plot.entrance_rotation,
+            8.0,
+        ))
+    }
+
     pub fn to_lua_zone(&self, weather_id: u8, query: InstanceQuery) -> LuaZone {
         LuaZone {
             zone_id: self.id,
@@ -487,6 +503,12 @@ impl Zone {
             map_id: self.map_id,
             cached_npc_base_ids: self.cached_npc_base_ids.clone(),
             cached_eobj_base_ids: self.cached_eobj_base_ids.clone(),
+            cached_housing_entrance_plots: self.cached_housing_entrance_plots.clone(),
+            cached_housing_plots: self
+                .cached_housing_plots
+                .iter()
+                .map(|p| (Position(p.entrance_position), p.entrance_rotation))
+                .collect(),
             cached_pop_ranges: self.cached_pop_ranges.clone(),
             query,
             ..Default::default()
@@ -671,6 +693,10 @@ impl Zone {
                 args2: u32::from_le_bytes([0, i as u8, 0, 0]),
                 ..Default::default()
             };
+            self.cached_eobj_base_ids
+                .insert(spawn.entity_id.0, spawn.base_id);
+            self.cached_housing_entrance_plots
+                .insert(spawn.entity_id.0, i as u8);
             object_spawns.push((spawn, String::default()));
         }
 
@@ -1601,5 +1627,46 @@ pub fn handle_zone_messages(
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn housing_plot_exit_transform_nudges_eight_yalms_with_radian_rotation() {
+        let mut zone = Zone::default();
+        zone.cached_housing_plots.push(HousingPlot {
+            entrance_position: Vec3A::new(1.0, 2.0, 3.0),
+            entrance_rotation: std::f32::consts::FRAC_PI_2,
+        });
+
+        let (pos, rot) = zone
+            .housing_plot_exit_transform(0)
+            .expect("cached plot must resolve exit transform");
+        assert!((pos.0.x - 9.0).abs() < 1e-4);
+        assert!((pos.0.y - 2.0).abs() < 1e-4);
+        assert!((pos.0.z - 3.0).abs() < 1e-4);
+        assert!((rot - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn real_758_housing_ward_loads_sixty_plot_gates_with_valid_radian_rotations() {
+        let Some(game_data) = crate::test_game_data() else {
+            return;
+        };
+        let zone = Zone::load(game_data, 339);
+        assert_eq!(zone.cached_housing_plots.len(), 60);
+        for raw_idx in 0..60usize {
+            let (pos, rot) = zone
+                .housing_plot_exit_transform(raw_idx)
+                .expect("plot exit transform must exist");
+            assert!(
+                (-std::f32::consts::PI..=std::f32::consts::PI).contains(&rot),
+                "rotation {rot} out of radian quantization bounds"
+            );
+            assert!(pos.0.length() > 0.0);
+        }
     }
 }

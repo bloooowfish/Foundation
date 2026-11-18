@@ -958,21 +958,44 @@ async fn process_packet(
                                 .actor_control_self(ActorControlCategory::SetItemLevel { level })
                                 .await;
 
-                            connection
-                                .handle
-                                .send(ToServer::ReadySpawnPlayer(
-                                    connection.id,
-                                    connection.player_data.character.actor_id,
-                                    connection.player_data.volatile.zone_id as u16,
-                                    connection.player_data.volatile.position,
-                                    connection.player_data.volatile.rotation as f32,
-                                    if connection.player_data.unlock.cutscene_seen.contains(2) {
-                                        None
-                                    } else {
-                                        Some(connection.player_data.city_state)
-                                    }, // If seen the opening cutscene
-                                ))
-                                .await;
+                            if connection.player_data.unlock.cutscene_seen.contains(2)
+                                && let Some(login_ward) =
+                                    connection.housing_sim.login_ward_spawn.take()
+                            {
+                                connection
+                                    .handle
+                                    .send(ToServer::HousingSim(
+                                        housing_sim::session::HousingSimToServer::SpawnLoginInWard {
+                                            client_id: connection.id,
+                                            actor_id: connection.player_data.character.actor_id,
+                                            territory_type_id: login_ward.territory_type_id,
+                                            ward_index: login_ward.ward_index,
+                                            division: login_ward.division,
+                                            plot_index: login_ward.plot_index,
+                                            is_apartment_exit: login_ward.is_apartment_exit,
+                                            fallback_pos: connection.player_data.volatile.position,
+                                            fallback_rot: connection.player_data.volatile.rotation
+                                                as f32,
+                                        },
+                                    ))
+                                    .await;
+                            } else {
+                                connection
+                                    .handle
+                                    .send(ToServer::ReadySpawnPlayer(
+                                        connection.id,
+                                        connection.player_data.character.actor_id,
+                                        connection.player_data.volatile.zone_id as u16,
+                                        connection.player_data.volatile.position,
+                                        connection.player_data.volatile.rotation as f32,
+                                        if connection.player_data.unlock.cutscene_seen.contains(2) {
+                                            None
+                                        } else {
+                                            Some(connection.player_data.city_state)
+                                        }, // If seen the opening cutscene
+                                    ))
+                                    .await;
+                            }
 
                             connection.send_mailbox_status().await;
                             connection.init_linkshells().await;

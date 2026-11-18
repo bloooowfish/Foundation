@@ -9,8 +9,9 @@ use crate::ZoneConnection;
 use crate::inventory::Item;
 
 use super::db::{
-    MAX_ESTATE_GREETING_BYTES, MAX_ESTATE_NAME_BYTES, clamp_utf8, create_snapshot,
-    delete_furniture_slot, estate_by_land_ident, list_placed_furniture_in_scope, list_snapshots,
+    HousingEstateRow, MAX_ESTATE_GREETING_BYTES, MAX_ESTATE_NAME_BYTES, clamp_utf8,
+    create_snapshot, delete_furniture_slot, estate_by_land_ident, list_all_estates,
+    list_placed_furniture_in_scope, list_snapshots, owned_estates_for_character,
     restore_latest_snapshot, save_estate,
 };
 use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
@@ -18,20 +19,23 @@ use super::flows::{
     apply_preset_file_to_estate, build_selection_from_row, connection_catalog,
     ensure_local_apartment_estate, ensure_local_plot_estate, execute_housing_reload,
     publish_session_snapshot, push_indoor_live_refresh, rebuild_house_inventory_from_db,
-    warp_into_estate_interior, warp_to_estate_outdoor,
+    send_owned_housing, warp_into_estate_interior, warp_to_apartment_outdoor,
+    warp_to_estate_outdoor,
 };
 use super::gamedata_ext::{
     display_name_for_renovation, normalize_district_style_name, renovation_row_for_style_and_size,
 };
 use super::plots::{
-    city_fallback_aetheryte_for_territory, default_district_for_zone, is_apartment_territory,
-    is_house_interior_territory, nearest_plot_to_position,
+    canonical_plot_for_district_and_size, city_fallback_aetheryte_for_territory,
+    default_district_for_zone, district_display_name, is_apartment_lobby_territory,
+    is_apartment_territory, is_house_interior_territory, nearest_plot_to_position,
+    parse_district_territory,
 };
 use super::remake_place::{
     PresetScope, export_estate_to_layout, parse_layout_bytes, prepare_apply_layout,
     read_layout_file, resolve_safe_preset_path, scan_preset_directory,
 };
-use super::session::{HousingSseEvent, ReloadMode};
+use super::session::{HousingSseEvent, ReloadMode, WardContext};
 
 /// Attempts to parse and execute `!housing ...` chat commands for any player.
 pub async fn try_handle_housing_chat_command(
@@ -54,6 +58,8 @@ pub async fn try_handle_housing_chat_command(
     match sub.as_str() {
         "help" | "?" => send_help(connection).await,
         "testhouse" | "house" => cmd_testhouse(connection, args).await,
+        "switch" | "go" | "tp" => cmd_switch(connection, args).await,
+        "list" | "estates" => cmd_list(connection).await,
         "apartment" | "apt" => cmd_apartment(connection, args).await,
         "enter" => cmd_enter(connection, args).await,
         "exit" | "leave" => cmd_exit(connection).await,
@@ -125,8 +131,9 @@ fn split_command_tokens(input: &str) -> Vec<String> {
 async fn send_help(connection: &mut ZoneConnection) {
     for line in [
         "[Housing Simulator Commands]",
-        "  !housing testhouse [ward] [plot] [small|medium|large] [sub|main]",
-        "  !housing apartment [ward] [sub|main] [room]",
+        "  !housing testhouse [district] [small|medium|large] [ward] [plot] [sub|main] [inside|outside]",
+        "  !housing switch <district|land_ident|apt> [small|medium|large] [ward] [plot] [sub|main] [inside|outside]",
+        "  !housing apartment [district] [ward] [sub|main] [room] | !housing list",
         "  !housing enter | !housing exit | !housing reload [live|zone] | !housing info",
         "  !housing preset [check|latest|repeat] [all|interior|exterior] <path> [--reload=auto|live|zone|none]",
         "  !housing export [all|interior|exterior] [name] | !housing undo | !housing reset [all|interior|exterior]",
@@ -164,69 +171,196 @@ fn active_land_ident(connection: &ZoneConnection) -> Option<i32> {
         .map(|s| s.land_ident)
 }
 
-async fn cmd_testhouse(connection: &mut ZoneConnection, args: &[String]) {
+struct ParsedHousingTarget {
+    district: u16,
+    ward_index: u8,
+    division: u8,
+    plot_index: u8,
+    requested_size: Option<PlotSize>,
+    is_apartment: bool,
+    room_number: u16,
+    inside_override: Option<bool>,
+    direct_land_ident: Option<i32>,
+}
+
+fn parse_housing_target_args(connection: &ZoneConnection, args: &[String]) -> ParsedHousingTarget {
     let zone_id = connection.player_data.volatile.zone_id as u16;
+    let current_district = default_district_for_zone(zone_id);
     let in_ward = connection
         .housing_sim
         .display_ward_context
-        .filter(|ctx| ctx.territory_type_id == zone_id);
+        .filter(|ctx| ctx.territory_type_id == current_district);
 
+    let mut district = current_district;
     let mut ward_index = in_ward.map(|c| c.ward_index).unwrap_or(0);
     let mut division = in_ward.map(|c| c.division).unwrap_or(0);
-    let mut plot_index: Option<u8> = nearest_plot_to_position(
-        default_district_for_zone(zone_id),
-        connection.player_data.volatile.position,
-    )
-    .map(|(div, plot)| {
-        division = div;
-        plot
-    });
+    let mut explicit_plot: Option<u8> = None;
     let mut requested_size: Option<PlotSize> = None;
-    let mut numeric_args: Vec<u16> = Vec::new();
+    let mut is_apartment = false;
+    let mut inside_override: Option<bool> = None;
+    let mut numeric_args: Vec<u32> = Vec::new();
+    let mut district_explicit = false;
 
     for arg in args {
-        let low = arg.to_ascii_lowercase();
-        if let Some(sz) = parse_plot_size(&low) {
+        let trimmed = arg.trim();
+        let low = trimmed.to_ascii_lowercase();
+        if let Some(d) = parse_district_territory(trimmed) {
+            district = d;
+            district_explicit = true;
+        } else if let Some(sz) = parse_plot_size(&low) {
             requested_size = Some(sz);
+        } else if matches!(low.as_str(), "apt" | "apartment" | "apartments") {
+            is_apartment = true;
         } else if low == "sub" || low == "subdivision" {
             division = 1;
         } else if low == "main" {
             division = 0;
-        } else if let Ok(n) = low.parse::<u16>() {
+        } else if matches!(low.as_str(), "inside" | "in" | "--inside" | "enter") {
+            inside_override = Some(true);
+        } else if matches!(low.as_str(), "outside" | "out" | "--outside" | "gate") {
+            inside_override = Some(false);
+        } else if let Ok(n) = low.parse::<u32>() {
             numeric_args.push(n);
         }
     }
 
-    if numeric_args.len() >= 2 {
+    if numeric_args.len() == 1 && numeric_args[0] > 1000 && !district_explicit {
+        return ParsedHousingTarget {
+            district,
+            ward_index,
+            division,
+            plot_index: 0,
+            requested_size,
+            is_apartment,
+            room_number: 1,
+            inside_override,
+            direct_land_ident: Some(numeric_args[0] as i32),
+        };
+    }
+
+    let mut room_number = 1u16;
+    if is_apartment {
+        if numeric_args.len() >= 2 {
+            ward_index = numeric_args[0].saturating_sub(1).min(29) as u8;
+            room_number = numeric_args[1].clamp(1, 90) as u16;
+        } else if numeric_args.len() == 1 {
+            room_number = numeric_args[0].clamp(1, 90) as u16;
+        }
+    } else if numeric_args.len() >= 2 {
         ward_index = numeric_args[0].saturating_sub(1).min(29) as u8;
         let raw_plot = numeric_args[1].saturating_sub(1).min(59) as u8;
         if raw_plot >= 30 {
             division = 1;
-            plot_index = Some(raw_plot - 30);
+            explicit_plot = Some(raw_plot - 30);
         } else {
-            plot_index = Some(raw_plot);
+            explicit_plot = Some(raw_plot);
         }
     } else if numeric_args.len() == 1 {
-        let n = numeric_args[0];
-        let raw_plot = n.saturating_sub(1).min(59) as u8;
+        let raw_plot = numeric_args[0].saturating_sub(1).min(59) as u8;
         if raw_plot >= 30 {
             division = 1;
-            plot_index = Some(raw_plot - 30);
+            explicit_plot = Some(raw_plot - 30);
         } else {
-            plot_index = Some(raw_plot);
+            explicit_plot = Some(raw_plot);
         }
     }
 
-    let district = default_district_for_zone(zone_id);
-    let plot_idx = plot_index.unwrap_or(0).min(29);
+    let plot_index = if is_apartment {
+        0
+    } else if let Some(p) = explicit_plot {
+        p
+    } else if let Some(sz) = requested_size {
+        canonical_plot_for_district_and_size(district, division, sz).unwrap_or(0)
+    } else if !district_explicit && kawari::common::internal_housing_row(zone_id).is_some() {
+        nearest_plot_to_position(district, connection.player_data.volatile.position)
+            .map(|(div, p)| {
+                division = div;
+                p
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
-    let Some(estate) = ensure_local_plot_estate(
-        connection,
+    ParsedHousingTarget {
         district,
         ward_index,
         division,
-        plot_idx,
+        plot_index,
         requested_size,
+        is_apartment,
+        room_number,
+        inside_override,
+        direct_land_ident: None,
+    }
+}
+
+async fn activate_and_warp_estate(
+    connection: &mut ZoneConnection,
+    estate: &HousingEstateRow,
+    go_indoor: bool,
+    requested_size_note: Option<PlotSize>,
+) {
+    let division = estate.division.clamp(0, 1) as u8;
+    connection.housing_sim.authoritative_ward_context = Some(WardContext {
+        territory_type_id: estate.territory_type_id as u16,
+        ward_index: estate.ward_index as u8,
+        division,
+    });
+    connection.housing_sim.active_estate = Some(build_selection_from_row(estate, go_indoor));
+    connection.housing_sim.is_owner_authorized = true;
+    rebuild_house_inventory_from_db(connection, estate, go_indoor);
+    send_owned_housing(connection).await;
+
+    let size = requested_size_note.unwrap_or_else(|| {
+        PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default()
+    });
+    let district_name = district_display_name(estate.territory_type_id as u16);
+    if estate.is_apartment {
+        connection
+            .send_notice(&format!(
+                "[Housing] Switched to {district_name} Apt W{}-R{} (land_ident={}), warping {}...",
+                estate.ward_index + 1,
+                estate.room_number,
+                estate.land_ident,
+                if go_indoor { "inside" } else { "to entrance" },
+            ))
+            .await;
+    } else {
+        connection
+            .send_notice(&format!(
+                "[Housing] Ready: '{}' ({district_name} W{}-P{}, {:?}, land_ident={}). Warping {}...",
+                estate.estate_name,
+                estate.ward_index + 1,
+                estate.division * 30 + estate.plot_index + 1,
+                size,
+                estate.land_ident,
+                if go_indoor { "inside" } else { "to gate" },
+            ))
+            .await;
+    }
+
+    if go_indoor {
+        warp_into_estate_interior(connection, estate, None, None).await;
+    } else {
+        warp_to_estate_outdoor(connection, estate, None, None).await;
+    }
+}
+
+async fn cmd_testhouse(connection: &mut ZoneConnection, args: &[String]) {
+    let parsed = parse_housing_target_args(connection, args);
+    if parsed.is_apartment {
+        cmd_apartment(connection, args).await;
+        return;
+    }
+
+    let Some(estate) = ensure_local_plot_estate(
+        connection,
+        parsed.district,
+        parsed.ward_index,
+        parsed.division,
+        parsed.plot_index,
+        parsed.requested_size,
         false,
         None,
     ) else {
@@ -236,27 +370,140 @@ async fn cmd_testhouse(connection: &mut ZoneConnection, args: &[String]) {
         return;
     };
 
-    connection.housing_sim.active_estate = Some(build_selection_from_row(&estate, false));
-    connection.housing_sim.is_owner_authorized = true;
-    super::flows::send_owned_housing(connection).await;
+    let go_indoor = parsed.inside_override.unwrap_or(false);
+    activate_and_warp_estate(connection, &estate, go_indoor, parsed.requested_size).await;
+}
+
+async fn cmd_switch(connection: &mut ZoneConnection, args: &[String]) {
+    if args.is_empty() {
+        connection
+            .send_notice(
+                "[Housing] Usage: !housing switch <mist|lavender|goblet|shirogane|empyreum|land_ident|apt> [small|medium|large] [ward] [plot] [sub|main] [inside|outside]",
+            )
+            .await;
+        return;
+    }
+
+    let parsed = parse_housing_target_args(connection, args);
+    let zone_id = connection.player_data.volatile.zone_id as u16;
+    let currently_indoors = is_house_interior_territory(zone_id)
+        || is_apartment_territory(zone_id)
+        || is_apartment_lobby_territory(zone_id);
+
+    let estate = if let Some(ident) = parsed.direct_land_ident {
+        let found = {
+            let mut db = connection.database.lock();
+            estate_by_land_ident(db.connection_mut(), ident)
+                .ok()
+                .flatten()
+        };
+        let Some(est) = found else {
+            connection
+                .send_notice(&format!("[Housing] Estate land_ident={ident} not found."))
+                .await;
+            return;
+        };
+        est
+    } else if parsed.is_apartment {
+        let Some(est) = ensure_local_apartment_estate(
+            connection,
+            parsed.district,
+            parsed.ward_index,
+            parsed.division,
+            parsed.room_number,
+        ) else {
+            connection
+                .send_notice("[Housing] Failed to create local apartment.")
+                .await;
+            return;
+        };
+        est
+    } else {
+        let Some(est) = ensure_local_plot_estate(
+            connection,
+            parsed.district,
+            parsed.ward_index,
+            parsed.division,
+            parsed.plot_index,
+            parsed.requested_size,
+            false,
+            None,
+        ) else {
+            connection
+                .send_notice("[Housing] Failed to create local simulator estate.")
+                .await;
+            return;
+        };
+        est
+    };
+
+    let go_indoor = parsed
+        .inside_override
+        .unwrap_or(estate.is_apartment || currently_indoors);
+    activate_and_warp_estate(connection, &estate, go_indoor, parsed.requested_size).await;
+}
+
+async fn cmd_list(connection: &mut ZoneConnection) {
+    let content_id = connection.player_data.character.content_id as u64;
+    let active_ident = active_land_ident(connection);
+    let (owned, all) = {
+        let mut db = connection.database.lock();
+        let conn = db.connection_mut();
+        (
+            owned_estates_for_character(conn, content_id).unwrap_or_default(),
+            list_all_estates(conn).unwrap_or_default(),
+        )
+    };
+    let rows = if owned.is_empty() { all } else { owned };
+    if rows.is_empty() {
+        connection
+            .send_notice("[Housing] No simulator estates found yet. Run !housing testhouse or !housing switch.")
+            .await;
+        return;
+    }
 
     connection
         .send_notice(&format!(
-            "[Housing] Ready: '{}' (land_ident={}, W{}-P{}, {:?}). Warping to estate...",
-            estate.estate_name,
-            estate.land_ident,
-            estate.ward_index + 1,
-            estate.division * 30 + estate.plot_index + 1,
-            PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default(),
+            "[Housing] Estates ({}): use !housing switch <land_ident>",
+            rows.len()
         ))
         .await;
-
-    warp_to_estate_outdoor(connection, &estate, None, None).await;
+    for row in rows.iter().take(15) {
+        let active_tag = if Some(row.land_ident) == active_ident {
+            " [ACTIVE]"
+        } else {
+            ""
+        };
+        let dname = district_display_name(row.territory_type_id as u16);
+        if row.is_apartment {
+            connection
+                .send_notice(&format!(
+                    "  id={} | {dname} W{}{} Apt #{}{active_tag}",
+                    row.land_ident,
+                    row.ward_index + 1,
+                    if row.division != 0 { " Sub" } else { "" },
+                    row.room_number,
+                ))
+                .await;
+        } else {
+            let sz = PlotSize::from_repr(row.plot_size.clamp(0, 2) as u8).unwrap_or_default();
+            connection
+                .send_notice(&format!(
+                    "  id={} | {dname} W{}-P{} ({:?}) '{}' {active_tag}",
+                    row.land_ident,
+                    row.ward_index + 1,
+                    row.division * 30 + row.plot_index + 1,
+                    sz,
+                    row.estate_name,
+                ))
+                .await;
+        }
+    }
 }
 
 async fn cmd_apartment(connection: &mut ZoneConnection, args: &[String]) {
     let zone_id = connection.player_data.volatile.zone_id as u16;
-    let district = default_district_for_zone(zone_id);
+    let mut district = default_district_for_zone(zone_id);
     let mut ward_index = connection
         .housing_sim
         .display_ward_context
@@ -268,14 +515,22 @@ async fn cmd_apartment(connection: &mut ZoneConnection, args: &[String]) {
         .map(|c| c.division)
         .unwrap_or(0);
     let mut room_number = 1u16;
+    let mut inside_override: Option<bool> = None;
     let mut nums = Vec::new();
 
     for arg in args {
-        let low = arg.to_ascii_lowercase();
-        if low == "sub" || low == "subdivision" {
+        let trimmed = arg.trim();
+        let low = trimmed.to_ascii_lowercase();
+        if let Some(d) = parse_district_territory(trimmed) {
+            district = d;
+        } else if low == "sub" || low == "subdivision" {
             division = 1;
         } else if low == "main" {
             division = 0;
+        } else if matches!(low.as_str(), "inside" | "in" | "--inside") {
+            inside_override = Some(true);
+        } else if matches!(low.as_str(), "outside" | "out" | "--outside" | "gate") {
+            inside_override = Some(false);
         } else if let Ok(n) = low.parse::<u16>() {
             nums.push(n);
         }
@@ -296,16 +551,8 @@ async fn cmd_apartment(connection: &mut ZoneConnection, args: &[String]) {
         return;
     };
 
-    connection.housing_sim.active_estate = Some(build_selection_from_row(&estate, true));
-    connection.housing_sim.is_owner_authorized = true;
-    super::flows::send_owned_housing(connection).await;
-    connection
-        .send_notice(&format!(
-            "[Housing] Entering apartment room #{} (land_ident={})...",
-            estate.room_number, estate.land_ident
-        ))
-        .await;
-    warp_into_estate_interior(connection, &estate, None, None).await;
+    let go_indoor = inside_override.unwrap_or(true);
+    activate_and_warp_estate(connection, &estate, go_indoor, None).await;
 }
 
 async fn cmd_enter(connection: &mut ZoneConnection, args: &[String]) {
@@ -356,8 +603,31 @@ async fn cmd_enter(connection: &mut ZoneConnection, args: &[String]) {
 }
 
 async fn cmd_exit(connection: &mut ZoneConnection) {
+    let zone_id = connection.player_data.volatile.zone_id as u16;
+    if is_apartment_lobby_territory(zone_id) || is_apartment_territory(zone_id) {
+        if let Some(ident) = active_land_ident(connection)
+            && let Some(est) = {
+                let mut db = connection.database.lock();
+                estate_by_land_ident(db.connection_mut(), ident)
+                    .ok()
+                    .flatten()
+            }
+            && est.is_apartment
+        {
+            warp_to_estate_outdoor(connection, &est, None, None).await;
+            return;
+        }
+        let (district, ward_index, division) = connection
+            .housing_sim
+            .display_ward_context
+            .filter(|c| c.territory_type_id == default_district_for_zone(zone_id))
+            .map(|c| (c.territory_type_id, c.ward_index, c.division))
+            .unwrap_or((default_district_for_zone(zone_id), 0, 0));
+        warp_to_apartment_outdoor(connection, district, ward_index, division).await;
+        return;
+    }
+
     let Some(ident) = active_land_ident(connection) else {
-        let zone_id = connection.player_data.volatile.zone_id as u16;
         let aetheryte = city_fallback_aetheryte_for_territory(zone_id);
         let _ = aetheryte;
         connection

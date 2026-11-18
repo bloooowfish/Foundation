@@ -63,6 +63,10 @@ impl LuaPlayer {
         });
     }
 
+    fn housing_enter_apartment(&mut self) {
+        self.queued_tasks.push(LuaTask::HousingEnterApartment);
+    }
+
     fn housing_exit_house(&mut self) {
         self.queued_tasks.push(LuaTask::HousingExitHouse);
     }
@@ -1047,6 +1051,10 @@ impl UserData for LuaPlayer {
         );
         methods.add_method_mut("change_territory_house", |_, this, house_id: u32| {
             this.change_territory_house(house_id);
+            Ok(())
+        });
+        methods.add_method_mut("housing_enter_apartment", |_, this, _: ()| {
+            this.housing_enter_apartment();
             Ok(())
         });
         methods.add_method_mut("housing_exit_house", |_, this, _: ()| {

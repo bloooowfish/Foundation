@@ -17,34 +17,9 @@ function onReturn(scene, results, player)
     local ENTER_LOBBY <const> = 2 -- Retail never shows this. We're currently not setting something properly to hide it.
 
     if results[1] == EXIT_BUILDING then
-        -- TODO: This is a temporary hack to ensure the player returns to a town aetheryte plaza safely after exiting an apartment or lobby. It's incredibly inaccurate, but at the moment we can't load housing wards from a housing interior exit, so this is the next best solution.
-        local INTERIORS_TO_TOWN <const> = {
-            -- Apartment lobbies
-            [573] = 8, -- Topmast Apartment Lobby to Limsa Lominsa Lower Decks
-            [574] = 9, -- Sultana's Breath Apartment Lobby to Ul'dah - Steps of Nald
-            [575] = 2, -- Lily Hills Apartment Lobby to New Gridania
-            [654] = 111, -- Kobai Goten Apartment Lobby to Kugane
-            [985] = 70, -- Ingleside Apartment Lobby to Foundation - Ishgard
-
-            -- Apartment interiors
-            [608] = 8, -- Topmast Apartment to Limsa Lominsa Lower Decks
-            [609] = 2, -- Lily Hills Apartment to New Gridania
-            [610] = 9, -- Sultana's Breath Apartment to Ul'dah - Steps of Nald
-            [655] = 111, -- Kobai Goten Apartment to Kugane
-            [999] = 70, -- Ingleside Apartment to Foundation - Ishgard
-        }
-        
         player:finish_event()
-        player:send_message("Due to housing being in extremely early stages, you will now be moved to the nearest city-state instead of the relevant ward.")
-
-        local destination = INTERIORS_TO_TOWN[player.zone.id]
-        if destination ~= nil then
-            player:warp_aetheryte(destination)
-            return
-        else
-            player:warp_aetheryte(2) -- Fallback to New Griania if something went wrong
-            return
-        end
+        player:housing_exit_house()
+        return
     elseif results[1] == ENTER_LOBBY then -- TODO: remove this once we can hide this menu option
         player:send_message("This option shouldn't be here and is a bug in Kawari, please select a different option.")
     end

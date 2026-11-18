@@ -818,6 +818,56 @@ pub fn position_to_array(pos: Position) -> [f32; 3] {
     [pos.0.x, pos.0.y, pos.0.z]
 }
 
+/// Resolves the `PopRange` instance ID for the Apartment Building aethernet shard in `(district_territory_id, division)`.
+pub fn apartment_aethernet_pop_range(
+    game_data: &mut GameData,
+    district_territory_id: u16,
+    division: u8,
+) -> Option<u32> {
+    use icarus::HousingAethernet::HousingAethernetSheet;
+    let sheet = HousingAethernetSheet::read_from(&mut game_data.resource, Language::None).ok()?;
+
+    let mut target_places = Vec::new();
+    if let Some(apt_zone) = super::plots::apartment_territory_for_district(district_territory_id)
+        && let Some(row) = game_data.territory_type_sheet.row(apt_zone as u32)
+    {
+        target_places.push(row.PlaceName);
+    }
+    if let Some(lobby_zone) =
+        super::plots::apartment_lobby_territory_for_district(district_territory_id)
+        && let Some(row) = game_data.territory_type_sheet.row(lobby_zone as u32)
+    {
+        target_places.push(row.PlaceName);
+    }
+
+    let candidates: Vec<_> = (&sheet)
+        .into_iter()
+        .flatten_subrows()
+        .map(|(_, row)| row)
+        .filter(|row| {
+            row.TerritoryType == district_territory_id
+                && row.Level != 0
+                && if division == 0 {
+                    row.Order > 0 && row.Order < 8
+                } else {
+                    row.Order >= 8
+                }
+        })
+        .collect();
+
+    if let Some(matched) = candidates
+        .iter()
+        .find(|row| target_places.contains(&row.PlaceName))
+    {
+        return Some(matched.Level);
+    }
+
+    candidates
+        .into_iter()
+        .max_by_key(|row| row.Order)
+        .map(|row| row.Level)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,5 +883,23 @@ mod tests {
         assert!(!catalog.united_parts_by_row.is_empty());
         assert!(!catalog.vase_flower_by_row.is_empty());
         assert!(catalog.closest_housing_stain([240, 240, 240]).is_some());
+    }
+
+    #[test]
+    fn real_758_apartment_aethernet_pop_ranges_resolve_all_districts() {
+        let Some(game_data) = crate::test_game_data() else {
+            return;
+        };
+        for district in super::super::plots::HOUSING_DISTRICT_TERRITORIES {
+            let zone = crate::server::zone::Zone::load(game_data, district);
+            for division in [0u8, 1] {
+                let pop_id = apartment_aethernet_pop_range(game_data, district, division)
+                    .expect("apartment aethernet shard must exist for every district/division");
+                assert!(
+                    zone.cached_pop_ranges.contains_key(&pop_id),
+                    "pop range {pop_id} missing from loaded zone {district} division {division}"
+                );
+            }
+        }
     }
 }

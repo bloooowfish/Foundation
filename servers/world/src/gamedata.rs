@@ -1723,11 +1723,15 @@ impl GameData {
         let intended_use =
             TerritoryIntendedUse::from_repr(row.TerritoryIntendedUse).unwrap_or_default();
 
-        // Don't allow players to spawn back into houses (this isn't allowed in retail anyway)
-        // And also don't allow players to spawn back into housing wards, because we don't keep track of which ward were in while logged out yet.
-        if intended_use == TerritoryIntendedUse::HousingOutdoor
-            || intended_use == TerritoryIntendedUse::HousingIndoor
-        {
+        // Residential wards default to Ward 0 when entered via direct zone changes or duty returns;
+        // house interiors are still normalized to their outdoor ward on login.
+        if intended_use == TerritoryIntendedUse::HousingOutdoor {
+            return Some(InstanceQuery::Ward { ward: 0 });
+        }
+        if crate::housing_sim::plots::is_apartment_lobby_territory(territory_type_id) {
+            return Some(InstanceQuery::UniqueInstance);
+        }
+        if intended_use == TerritoryIntendedUse::HousingIndoor {
             return None;
         }
 
