@@ -383,6 +383,18 @@ pub fn prepare_apply_layout(
     scope: PresetScope,
     actor_content_id: u64,
 ) -> PreparedReMakePlaceApply {
+    prepare_apply_layout_with_existing(estate, layout, catalog, scope, actor_content_id, &[])
+}
+
+/// Validates and compiles a `ReMakePlaceLayout` while preserving matching existing indoor slots to enable zero-reload live diffs.
+pub fn prepare_apply_layout_with_existing(
+    estate: &HousingEstateRow,
+    layout: &ReMakePlaceLayout,
+    catalog: &HousingCatalog,
+    scope: PresetScope,
+    actor_content_id: u64,
+    existing_indoor_rows: &[HousingFurnitureRow],
+) -> PreparedReMakePlaceApply {
     let mut updated_estate = estate.clone();
     let target_plot_size =
         PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default();
@@ -576,13 +588,31 @@ pub fn prepare_apply_layout(
     let mut interior_unresolved_items = Vec::new();
 
     if scope.includes_interior() {
+        struct ResolvedIndoorEntry<'a> {
+            flat_idx: usize,
+            parent_idx: Option<usize>,
+            item_id: u32,
+            cat_id: u16,
+            pos: Position,
+            rot: f32,
+            stain: u8,
+            raw_color_hex: Option<String>,
+            material_key: u16,
+            mat_item_id: Option<u32>,
+            extra_props: BTreeMap<String, serde_json::Value>,
+            raw_rotation_quat: [f32; 4],
+            raw_scale: [f32; 3],
+            _marker: std::marker::PhantomData<&'a ()>,
+        }
+
         let mut flat = Vec::new();
         flatten_furniture(&layout.interior_furniture, None, &mut flat);
         interior_input_count = flat.len();
         let cap = indoor_slot_capacity(target_plot_size, estate.is_apartment)
             .min(MAX_INDOOR_PLACED_SLOTS);
         let mut flat_to_assigned_slot: Vec<Option<u16>> = vec![None; flat.len()];
-        let mut next_slot = 0u16;
+        let mut resolved_entries = Vec::with_capacity(flat.len());
+        let mut candidates = Vec::with_capacity(flat.len());
 
         for (idx, (entry, parent_idx)) in flat.iter().enumerate() {
             let Some(meta) = catalog.resolve_item_by_id_or_name(entry.item_id, &entry.name) else {
@@ -597,16 +627,6 @@ pub fn prepare_apply_layout(
                 ));
                 continue;
             };
-            if (next_slot as usize) >= cap {
-                interior_truncated_count += 1;
-                continue;
-            }
-            let Some((container, page_slot)) = indoor_container_for_flat_slot(next_slot) else {
-                interior_truncated_count += 1;
-                continue;
-            };
-            flat_to_assigned_slot[idx] = Some(next_slot);
-            let parent_slot = parent_idx.and_then(|pi| flat_to_assigned_slot[pi]);
 
             let (pos, rot) = makeplace_transform_to_ffxiv(&entry.transform, layout.interior_scale);
             let (stain, raw_color_hex) = resolve_stain_from_props(&entry.properties, catalog);
@@ -617,41 +637,98 @@ pub fn prepare_apply_layout(
             extra_props.remove("color");
             extra_props.remove("material");
 
-            let fmeta = FurnitureRemakeMeta {
-                parent_slot,
-                raw_color_hex,
-                raw_rotation_quat: Some(entry.transform.rotation),
-                scale: if entry.transform.scale != [1.0, 1.0, 1.0] {
-                    Some(entry.transform.scale)
-                } else {
-                    None
-                },
-                material_item_id: mat_item_id,
-                extra_properties: extra_props,
-            };
-
-            furniture_rows.push(HousingFurnitureRow {
-                land_ident: estate.land_ident,
-                container_type: container as i32,
-                slot: page_slot as i32,
-                item_id: meta.item_id as i32,
-                catalog_id: cat_id as i32,
-                material_item_key: material_key as i32,
-                stain: stain as i32,
-                placed: true,
+            candidates.push(super::live_diff::SlotMatchCandidate {
+                catalog_id: cat_id,
+                item_id: meta.item_id,
                 pos_x: pos.0.x,
                 pos_y: pos.0.y,
                 pos_z: pos.0.z,
                 rotation: rot,
-                object_data_json: "{}".to_string(),
-                remake_meta_json: serde_json::to_string(&fmeta)
-                    .unwrap_or_else(|_| "{}".to_string()),
-                created_by_content_id: actor_content_id as i64,
-                updated_at: 0,
+                stain,
+                material_item_key: material_key,
             });
-            next_slot += 1;
+            resolved_entries.push(ResolvedIndoorEntry {
+                flat_idx: idx,
+                parent_idx: *parent_idx,
+                item_id: meta.item_id,
+                cat_id,
+                pos,
+                rot,
+                stain,
+                raw_color_hex,
+                material_key,
+                mat_item_id,
+                extra_props,
+                raw_rotation_quat: entry.transform.rotation,
+                raw_scale: entry.transform.scale,
+                _marker: std::marker::PhantomData,
+            });
+        }
+
+        let assigned_slots = super::live_diff::assign_indoor_slots_preserving_existing(
+            existing_indoor_rows,
+            &candidates,
+            cap,
+        );
+
+        for (entry, assigned_opt) in resolved_entries.iter().zip(assigned_slots.iter()) {
+            if let Some(flat_slot) = *assigned_opt {
+                flat_to_assigned_slot[entry.flat_idx] = Some(flat_slot);
+            }
+        }
+
+        let mut indoor_rows: Vec<(u16, HousingFurnitureRow)> =
+            Vec::with_capacity(resolved_entries.len());
+        for (entry, assigned_opt) in resolved_entries.into_iter().zip(assigned_slots.into_iter()) {
+            let Some(flat_slot) = assigned_opt else {
+                interior_truncated_count += 1;
+                continue;
+            };
+            let Some((container, page_slot)) = indoor_container_for_flat_slot(flat_slot) else {
+                interior_truncated_count += 1;
+                continue;
+            };
+            let parent_slot = entry.parent_idx.and_then(|pi| flat_to_assigned_slot[pi]);
+
+            let fmeta = FurnitureRemakeMeta {
+                parent_slot,
+                raw_color_hex: entry.raw_color_hex,
+                raw_rotation_quat: Some(entry.raw_rotation_quat),
+                scale: if entry.raw_scale != [1.0, 1.0, 1.0] {
+                    Some(entry.raw_scale)
+                } else {
+                    None
+                },
+                material_item_id: entry.mat_item_id,
+                extra_properties: entry.extra_props,
+            };
+
+            indoor_rows.push((
+                flat_slot,
+                HousingFurnitureRow {
+                    land_ident: estate.land_ident,
+                    container_type: container as i32,
+                    slot: page_slot as i32,
+                    item_id: entry.item_id as i32,
+                    catalog_id: entry.cat_id as i32,
+                    material_item_key: entry.material_key as i32,
+                    stain: entry.stain as i32,
+                    placed: true,
+                    pos_x: entry.pos.0.x,
+                    pos_y: entry.pos.0.y,
+                    pos_z: entry.pos.0.z,
+                    rotation: entry.rot,
+                    object_data_json: "{}".to_string(),
+                    remake_meta_json: serde_json::to_string(&fmeta)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                    created_by_content_id: actor_content_id as i64,
+                    updated_at: 0,
+                },
+            ));
             interior_resolved_count += 1;
         }
+        indoor_rows.sort_by_key(|(flat_slot, _)| *flat_slot);
+        furniture_rows.extend(indoor_rows.into_iter().map(|(_, row)| row));
     }
 
     let mut exterior_input_count = 0usize;
@@ -1437,5 +1514,121 @@ mod tests {
         assert_eq!(stored_int.window_stain, 1);
         assert_eq!(stored_int.grand_chandelier, 0);
         assert_eq!(stored_ext.roof_stain, 24);
+    }
+
+    #[test]
+    fn prepare_apply_layout_with_existing_preserves_slots_and_parent_links() {
+        let mut world_db = WorldDatabase::new_in_memory();
+        let conn = world_db.connection_mut();
+        let catalog = HousingCatalog::mock_for_tests();
+
+        let estate = crate::housing_sim::db::ensure_estate(
+            conn,
+            &EnsureEstateSpec {
+                territory_type_id: 340,
+                world_id: 79,
+                ward_index: 0,
+                division: 0,
+                plot_index: 0,
+                room_number: 0,
+                is_apartment: false,
+                plot_size: PlotSize::Small,
+                is_fc: false,
+                owner_content_id: 42,
+                owner_name: "Tester".to_string(),
+                estate_name: "SlotKeep".to_string(),
+                exterior_json: StoredHouseExterior::default().to_json(),
+                interior_json: StoredHouseInterior::default().to_json(),
+            },
+        )
+        .unwrap();
+
+        let (c5, s5) = indoor_container_for_flat_slot(5).unwrap();
+        let existing_parent = HousingFurnitureRow {
+            land_ident: estate.land_ident,
+            container_type: c5 as i32,
+            slot: s5 as i32,
+            item_id: 28901,
+            catalog_id: 0x014B,
+            material_item_key: 0,
+            stain: 0,
+            placed: true,
+            pos_x: 1.0,
+            pos_y: 0.0,
+            pos_z: 1.0,
+            rotation: 0.0,
+            ..Default::default()
+        };
+
+        let layout = ReMakePlaceLayout {
+            house_size: "Small".to_string(),
+            interior_scale: 100.0,
+            interior_furniture: vec![
+                ReMakePlaceFurniture {
+                    name: "Picture Frame (Gilded)".to_string(),
+                    item_id: 16935,
+                    transform: ReMakePlaceTransform {
+                        location: [0.0, 0.0, 0.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0, 1.0, 1.0],
+                    },
+                    ..Default::default()
+                },
+                ReMakePlaceFurniture {
+                    name: "White Rectangular Partition".to_string(),
+                    item_id: 28901,
+                    transform: ReMakePlaceTransform {
+                        // Slightly moved in ReMakePlace coords (+150cm X -> +1.5 FFXIV X).
+                        location: [150.0, 100.0, 0.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0, 1.0, 1.0],
+                    },
+                    attachments: vec![ReMakePlaceFurniture {
+                        name: "Picture Frame (Gilded)".to_string(),
+                        item_id: 16935,
+                        transform: ReMakePlaceTransform {
+                            location: [150.0, 100.0, 100.0],
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [1.0, 1.0, 1.0],
+                        },
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let prepared = prepare_apply_layout_with_existing(
+            &estate,
+            &layout,
+            &catalog,
+            PresetScope::Interior,
+            42,
+            &[existing_parent],
+        );
+
+        assert_eq!(prepared.preview.interior_resolved_count, 3);
+        let flat_for = |row: &HousingFurnitureRow| {
+            super::super::containers::flat_slot_for_placed_container(
+                super::super::containers::container_from_i32(row.container_type).unwrap(),
+                row.slot as u16,
+            )
+            .unwrap()
+        };
+
+        // Sorted by flat_slot:
+        // slot 0 -> first Picture Frame (brand new)
+        // slot 1 -> attachment Picture Frame (brand new)
+        // slot 5 -> White Rectangular Partition (kept prior slot 5!)
+        assert_eq!(flat_for(&prepared.furniture_rows[0]), 0);
+        assert_eq!(flat_for(&prepared.furniture_rows[1]), 1);
+        assert_eq!(flat_for(&prepared.furniture_rows[2]), 5);
+        assert_eq!(prepared.furniture_rows[2].item_id, 28901);
+
+        // Attachment at slot 1 must reference parent_slot = Some(5)!
+        let attach_meta: FurnitureRemakeMeta =
+            serde_json::from_str(&prepared.furniture_rows[1].remake_meta_json).unwrap();
+        assert_eq!(attach_meta.parent_slot, Some(5));
     }
 }

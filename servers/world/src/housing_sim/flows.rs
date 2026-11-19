@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use kawari::common::{
@@ -6,12 +7,14 @@ use kawari::common::{
 };
 use kawari::constants::COMPLETED_QUEST_BITMASK_SIZE;
 use kawari::ipc::zone::{
-    ActorControlCategory, ApartmentBuildingState, ApartmentList, AvailabilityType, FurnitureList,
-    GameMasterRank, GrandCompany as IpcGrandCompany, House, HouseList, HousingEstateGreeting,
-    HousingInteriorDetails, HousingOccupiedLandInfo, HousingVacantLandInfo, HousingWardInfo,
-    HousingWardSummaryItem, IndoorFurnitureMaterialUpdated, PlotSize, PurchaseType,
-    ServerZoneIpcData, ServerZoneIpcSegment, TenantType, UpdateMapMarkersForWardDivision,
-    WardDivision, WardDivisionInfo, WardMapInfo, WardMapInfoFlags,
+    ActorControlCategory, ActorControlSelf, ApartmentBuildingState, ApartmentList,
+    AvailabilityType, FurnitureList, FurnitureTranslatedForObserver, GameMasterRank,
+    GrandCompany as IpcGrandCompany, House, HouseList, HousingEstateGreeting,
+    HousingInteriorDetails, HousingObjectDataValueSet, HousingOccupiedLandInfo,
+    HousingStainUpdated, HousingVacantLandInfo, HousingWardInfo, HousingWardSummaryItem,
+    IndoorFurnitureMaterialUpdated, ItemInfo, PlotSize, PurchaseType, ServerZoneIpcData,
+    ServerZoneIpcSegment, TenantType, UpdateMapMarkersForWardDivision, WardDivision,
+    WardDivisionInfo, WardMapInfo, WardMapInfoFlags,
 };
 
 use crate::common::ToServer;
@@ -38,6 +41,7 @@ use super::gamedata_ext::{
     HousingCatalog, cached_housing_catalog, default_renovation_row_for_district_and_size,
     renovation_territory_for_row,
 };
+use super::live_diff::{IndoorLiveDiff, SyncedIndoorState, compute_indoor_live_diff};
 use super::overlays::{HousingOverlayKey, HousingOverlayObject, HousingOverlayScope};
 use super::plots::{
     apartment_territory_for_district, city_fallback_aetheryte_for_territory,
@@ -736,6 +740,7 @@ pub fn prepare_active_indoor_estate_for_zone_init(
 pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, house_id: HouseId) {
     let Some(estate) = prepare_active_indoor_estate_for_zone_init(connection, zone_id, house_id)
     else {
+        connection.housing_sim.synced_indoor_state = None;
         tracing::info!(
             zone_id,
             house_id = u64::from(house_id),
@@ -788,6 +793,8 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
         list_placed_furniture_in_scope(db.connection_mut(), estate.land_ident, true)
             .unwrap_or_default()
     };
+    connection.housing_sim.synced_indoor_state =
+        Some(SyncedIndoorState::from_db(&estate, zone_id, &placed_rows));
 
     let lists = build_indoor_furniture_lists(
         resolved_house_id,
@@ -1327,9 +1334,61 @@ pub async fn execute_housing_reload(
             return;
         }
 
-        if mode == ReloadMode::LivePackets && same_territory && same_estate {
-            push_indoor_live_refresh(connection, &estate).await;
-            return;
+        if mode != ReloadMode::ZoneReload && same_territory && same_estate {
+            let placed_rows = {
+                let mut db = connection.database.lock();
+                list_placed_furniture_in_scope(db.connection_mut(), estate.land_ident, true)
+                    .unwrap_or_default()
+            };
+            let next_state = SyncedIndoorState::from_db(&estate, current_zone_id, &placed_rows);
+
+            if let Some(ref prev_state) = connection.housing_sim.synced_indoor_state
+                && prev_state.land_ident == estate.land_ident
+                && prev_state.territory_type_id == current_zone_id
+            {
+                let diff = compute_indoor_live_diff(prev_state, &next_state);
+                if mode == ReloadMode::LivePackets
+                    || (mode == ReloadMode::Auto && diff.should_use_live_packets_in_auto())
+                {
+                    if diff.is_empty() {
+                        tracing::info!(
+                            land_ident = estate.land_ident,
+                            zone_id = current_zone_id,
+                            "Skipping live indoor refresh because state matches client snapshot"
+                        );
+                        if let Some(ref hub) = connection.housing_hub {
+                            hub.emit_event(super::session::HousingSseEvent {
+                                kind: "live_diff_applied".to_string(),
+                                land_ident: Some(estate.land_ident),
+                                message: "변경 사항 없음 (무로딩 유지)".to_string(),
+                                session: None,
+                            });
+                        }
+                        return;
+                    }
+                    push_indoor_live_diff(
+                        connection,
+                        &estate,
+                        current_zone_id,
+                        &diff,
+                        next_state,
+                        &placed_rows,
+                    )
+                    .await;
+                    return;
+                }
+
+                tracing::info!(
+                    land_ident = estate.land_ident,
+                    zone_id = current_zone_id,
+                    structural = diff.structural_change_count(),
+                    total_ops = diff.total_furniture_ops(),
+                    "ReloadMode::Auto exceeded live diff threshold; falling back to indoor zone reload"
+                );
+            } else if mode == ReloadMode::LivePackets {
+                push_indoor_live_refresh(connection, &estate).await;
+                return;
+            }
         }
 
         let (pos, rot) = if preserve_player_pos && same_territory && same_estate {
@@ -1450,7 +1509,273 @@ pub async fn push_indoor_live_refresh(connection: &mut ZoneConnection, estate: &
 
     send_indoor_object_data_value_sets(connection, &placed).await;
     rebuild_house_inventory_from_db(connection, estate, true);
+    let current_zone_id = connection.player_data.volatile.zone_id as u16;
+    if is_house_interior_territory(current_zone_id) || is_apartment_territory(current_zone_id) {
+        connection.housing_sim.synced_indoor_state =
+            Some(SyncedIndoorState::from_db(estate, current_zone_id, &placed));
+    }
     sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingIndoor).await;
+}
+
+/// Refreshes the in-memory mirrored client state after in-game indoor furniture/lighting mutations.
+pub fn refresh_synced_indoor_state_from_db(connection: &mut ZoneConnection, land_ident: i32) {
+    let Some(existing_zone_id) = connection
+        .housing_sim
+        .synced_indoor_state
+        .as_ref()
+        .filter(|s| s.land_ident == land_ident)
+        .map(|s| s.territory_type_id)
+    else {
+        return;
+    };
+
+    let (estate_opt, placed_rows) = {
+        let mut db = connection.database.lock();
+        let conn = db.connection_mut();
+        let est = estate_by_land_ident(conn, land_ident).ok().flatten();
+        let rows = list_placed_furniture_in_scope(conn, land_ident, true).unwrap_or_default();
+        (est, rows)
+    };
+    if let Some(est) = estate_opt {
+        connection.housing_sim.synced_indoor_state = Some(SyncedIndoorState::from_db(
+            &est,
+            existing_zone_id,
+            &placed_rows,
+        ));
+    }
+}
+
+/// Pushes minimal delta packets (`1009`, `638`, `709`, `317`, `701`, `971`, `261`, `1035`) with zero loading screen.
+pub async fn push_indoor_live_diff(
+    connection: &mut ZoneConnection,
+    estate: &HousingEstateRow,
+    target_zone: u16,
+    diff: &IndoorLiveDiff,
+    next_state: SyncedIndoorState,
+    placed_rows: &[HousingFurnitureRow],
+) {
+    let mut row_by_slot: HashMap<(i32, i32), &HousingFurnitureRow> =
+        HashMap::with_capacity(placed_rows.len());
+    for row in placed_rows {
+        row_by_slot.insert((row.container_type, row.slot), row);
+    }
+
+    let sequence = connection.player_data.item_sequence;
+    let mut segments = Vec::new();
+
+    // 1. Removals first so freed slots never collide with subsequent additions.
+    for old in &diff.removed {
+        if let Some(s) = connection
+            .player_data
+            .house_inventory
+            .get_item_mut(old.container_type, old.slot_in_page)
+        {
+            *s = Item::default();
+        }
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::UpdateInventorySlot(ItemInfo {
+                sequence,
+                slot: old.slot_in_page,
+                container: old.container_type,
+                ..Item::default().into()
+            }),
+        ));
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::ActorControlSelf(ActorControlSelf {
+                category: ActorControlCategory::FurnitureRemovedToInventoryAck {
+                    unk1: old.flat_slot as u32,
+                    unk2: 0,
+                    unk3: 0,
+                    unk4: 0,
+                },
+            }),
+        ));
+    }
+
+    // 2. Additions (inventory slot + InteriorFurniturePlaced + optional material + object data).
+    for new in &diff.added {
+        let item = Item {
+            item_id: new.item_id,
+            quantity: 1,
+            stains: [new.stain, 0],
+            ..Default::default()
+        };
+        if let Some(s) = connection
+            .player_data
+            .house_inventory
+            .get_item_mut(new.container_type, new.slot_in_page)
+        {
+            *s = item;
+        }
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::UpdateInventorySlot(ItemInfo {
+                sequence,
+                slot: new.slot_in_page,
+                container: new.container_type,
+                ..item.into()
+            }),
+        ));
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::InteriorFurniturePlaced {
+                storage_id: new.container_type,
+                slot: new.slot_in_page,
+                item_id: new.catalog_id,
+                unk1: 1,
+                stain: new.stain,
+                unk2: [0; 3],
+                rotation: new.rotation,
+                position: Position(glam::Vec3A::new(new.pos_x, new.pos_y, new.pos_z)),
+                unk3: [0; 4],
+            },
+        ));
+        if new.material_item_key > 0 {
+            segments.push(ServerZoneIpcSegment::new(
+                ServerZoneIpcData::IndoorFurnitureMaterialUpdated(IndoorFurnitureMaterialUpdated {
+                    material_item_key: new.material_item_key,
+                    container_id: new.container_type,
+                    slot: new.slot_in_page as u8,
+                    pad0: [0; 3],
+                }),
+            ));
+        }
+        let value_set = row_by_slot
+            .get(&(new.container_type as i32, new.slot_in_page as i32))
+            .and_then(|row| {
+                build_housing_object_data_value_sets(&[(*row).clone()])
+                    .into_iter()
+                    .next()
+            })
+            .unwrap_or_else(|| HousingObjectDataValueSet {
+                furniture_index: new.flat_slot,
+                ..Default::default()
+            });
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::HousingObjectDataValueSet(value_set),
+        ));
+    }
+
+    // 3. Moves / Rotations (709, batched 16 per TCP frame).
+    for moved in &diff.moved {
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::FurnitureTranslatedForObserver(FurnitureTranslatedForObserver {
+                rotation: moved.rotation,
+                plot_and_index: moved.flat_slot,
+                outdoor_index: (moved.flat_slot & 0xFF) as u8,
+                plot_number: (moved.flat_slot >> 8) as u8,
+                unk1: [0; 2],
+                position: Position(glam::Vec3A::new(moved.pos_x, moved.pos_y, moved.pos_z)),
+                unk2: [0; 4],
+            }),
+        ));
+    }
+
+    // 4. Live Stain Updates (317).
+    for stained in &diff.stained {
+        if let Some(item) = connection
+            .player_data
+            .house_inventory
+            .get_item_mut(stained.container_type, stained.slot_in_page)
+        {
+            item.stains = [stained.stain, 0];
+        }
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::HousingStainUpdated(HousingStainUpdated {
+                stain: stained.stain,
+                pad0: 0,
+                container_id: stained.container_type,
+                slot: stained.slot_in_page as u8,
+                pad1: [0; 3],
+                plot_index: estate.plot_index as u8,
+                pad2: 0,
+                apply_all_exterior_parts: 0,
+                pad3: 0,
+            }),
+        ));
+    }
+
+    // 5. Live VaseFlower Material Updates (701).
+    for mat in &diff.material_changed {
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::IndoorFurnitureMaterialUpdated(IndoorFurnitureMaterialUpdated {
+                material_item_key: mat.material_item_key,
+                container_id: mat.container_type,
+                slot: mat.slot_in_page as u8,
+                pad0: [0; 3],
+            }),
+        ));
+    }
+
+    // 6. Object Data Value Set Updates (971).
+    for changed in &diff.object_data_changed {
+        if let Some(row) =
+            row_by_slot.get(&(changed.container_type as i32, changed.slot_in_page as i32))
+        {
+            for pkt in build_housing_object_data_value_sets(&[(*row).clone()]) {
+                segments.push(ServerZoneIpcSegment::new(
+                    ServerZoneIpcData::HousingObjectDataValueSet(pkt),
+                ));
+            }
+        }
+    }
+
+    // 7. Interior Fixtures / Lighting Updates (261 + silent 1035).
+    if diff.fixtures_or_lighting_changed {
+        let plot_size = PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default();
+        let interior = StoredHouseInterior::from_json(&estate.interior_json);
+        let details = interior.to_packet(
+            estate.light_level.clamp(0, 5) as u8,
+            estate.enable_ssao,
+            plot_size,
+            estate.is_apartment,
+        );
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::HousingInteriorDetails(details),
+        ));
+        segments.push(ServerZoneIpcSegment::new(
+            ServerZoneIpcData::ActorControlSelf(ActorControlSelf {
+                category: ActorControlCategory::InteriorLightLevel {
+                    unk1: 1,
+                    level: estate.light_level.clamp(0, 5) as u32,
+                    unk2: u32::from(estate.enable_ssao),
+                },
+            }),
+        ));
+    }
+
+    let segment_count = segments.len();
+    if !segments.is_empty() {
+        connection.send_ipcs_self(&segments).await;
+    }
+
+    rebuild_house_inventory_from_db(connection, estate, true);
+    connection.housing_sim.synced_indoor_state = Some(next_state);
+    if diff.needs_overlay_sync() {
+        sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingIndoor).await;
+    }
+
+    let summary_ko = diff.summary_ko();
+    tracing::info!(
+        land_ident = estate.land_ident,
+        zone_id = target_zone,
+        removed = diff.removed.len(),
+        added = diff.added.len(),
+        moved = diff.moved.len(),
+        stained = diff.stained.len(),
+        material_changed = diff.material_changed.len(),
+        object_data_changed = diff.object_data_changed.len(),
+        fixtures_or_lighting_changed = diff.fixtures_or_lighting_changed,
+        segments = segment_count,
+        "Pushed indoor live diff without zone reload"
+    );
+
+    if let Some(ref hub) = connection.housing_hub {
+        hub.emit_event(super::session::HousingSseEvent {
+            kind: "live_diff_applied".to_string(),
+            land_ident: Some(estate.land_ident),
+            message: format!("무로딩 실시간 반영: {summary_ko}"),
+            session: None,
+        });
+    }
 }
 
 /// Applies a ReMakePlace preset file or JSON struct onto an estate and returns a human/HTTP summary.
@@ -1515,12 +1840,18 @@ pub fn apply_preset_layout_with_catalog(
         .ok_or_else(|| format!("Housing estate land_ident={land_ident} not found"))?;
 
     let snap_id = super::db::create_snapshot(conn, land_ident, snapshot_label).ok();
-    let prepared = super::remake_place::prepare_apply_layout(
+    let existing_indoor = if scope.includes_interior() {
+        list_placed_furniture_in_scope(conn, land_ident, true).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let prepared = super::remake_place::prepare_apply_layout_with_existing(
         &estate,
         layout,
         catalog,
         scope,
         actor_content_id,
+        &existing_indoor,
     );
 
     save_estate(conn, &prepared.updated_estate)

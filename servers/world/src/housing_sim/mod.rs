@@ -5,6 +5,7 @@ pub mod fixtures;
 pub mod flows;
 pub mod gamedata_ext;
 pub mod http;
+pub mod live_diff;
 pub mod overlays;
 pub mod packets;
 pub mod plots;

@@ -44,10 +44,11 @@ use super::flows::{
     build_selection_from_row, complete_deferred_indoor_tail_on_remodel, connection_catalog,
     ensure_local_apartment_estate, ensure_local_plot_estate, execute_housing_reload,
     give_sample_kit_to_connection, publish_session_snapshot, push_indoor_live_refresh,
-    rebuild_house_inventory_from_db, send_apartment_list_from_db, send_housing_placard_info,
-    send_housing_ward_info, send_owned_housing, sync_current_overlays_for_connection,
-    target_indoor_territory_for_estate, unlock_online_connection, warp_into_estate_interior,
-    warp_to_apartment_outdoor, warp_to_estate_outdoor,
+    rebuild_house_inventory_from_db, refresh_synced_indoor_state_from_db,
+    send_apartment_list_from_db, send_housing_placard_info, send_housing_ward_info,
+    send_owned_housing, sync_current_overlays_for_connection, target_indoor_territory_for_estate,
+    unlock_online_connection, warp_into_estate_interior, warp_to_apartment_outdoor,
+    warp_to_estate_outdoor,
 };
 use super::gamedata_ext::cached_housing_catalog;
 use super::overlays::{
@@ -835,6 +836,9 @@ async fn handle_place_furniture(
             },
         ))
         .await;
+    if indoors {
+        refresh_synced_indoor_state_from_db(connection, estate.land_ident);
+    }
     true
 }
 
@@ -859,7 +863,8 @@ async fn handle_remove_or_store_furniture(
         return true;
     }
 
-    if let Some(flat_slot) = flat_slot_for_placed_container(storage_id, slot) {
+    let removed_flat_slot = flat_slot_for_placed_container(storage_id, slot);
+    if let Some(flat_slot) = removed_flat_slot {
         let key = HousingOverlayKey {
             indoors,
             ward_index: estate.ward_index as u8,
@@ -934,6 +939,9 @@ async fn handle_remove_or_store_furniture(
                     id: current_item.item_id,
                 })
                 .await;
+            if indoors {
+                refresh_synced_indoor_state_from_db(connection, estate.land_ident);
+            }
             return true;
         }
     }
@@ -984,7 +992,7 @@ async fn handle_remove_or_store_furniture(
     }
     connection
         .actor_control_self(ActorControlCategory::FurnitureRemovedToInventoryAck {
-            unk1: 0,
+            unk1: removed_flat_slot.unwrap_or(0) as u32,
             unk2: 0,
             unk3: 0,
             unk4: 0,
@@ -996,6 +1004,9 @@ async fn handle_remove_or_store_furniture(
             id: current_item.item_id,
         })
         .await;
+    if indoors {
+        refresh_synced_indoor_state_from_db(connection, estate.land_ident);
+    }
     true
 }
 
@@ -1077,6 +1088,9 @@ async fn handle_translate_furniture(
             },
         ))
         .await;
+    if indoors {
+        refresh_synced_indoor_state_from_db(connection, estate.land_ident);
+    }
     true
 }
 
@@ -1154,6 +1168,7 @@ async fn handle_batch_translate(
             }),
         ))
         .await;
+    refresh_synced_indoor_state_from_db(connection, estate.land_ident);
     true
 }
 
@@ -1236,6 +1251,10 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
             }),
         ))
         .await;
+    let zone_id = connection.player_data.volatile.zone_id as u16;
+    if is_house_interior_territory(zone_id) || is_apartment_territory(zone_id) {
+        refresh_synced_indoor_state_from_db(connection, estate.land_ident);
+    }
     true
 }
 
@@ -1491,6 +1510,7 @@ async fn handle_update_aquarium(connection: &mut ZoneConnection, pkt: &UpdateAqu
                 }),
             ))
             .await;
+        refresh_synced_indoor_state_from_db(connection, estate.land_ident);
     }
     true
 }

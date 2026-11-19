@@ -83,6 +83,7 @@ pub struct HousingSimSession {
     pub last_entrance_plot: Option<(u8, u8)>,
     pub login_ward_spawn: Option<LoginWardSpawn>,
     pub pending_same_zone_indoor_reentry: Option<PendingSameZoneIndoorReentry>,
+    pub synced_indoor_state: Option<super::live_diff::SyncedIndoorState>,
     pub is_owner_authorized: bool,
 }
 
@@ -94,6 +95,7 @@ impl HousingSimSession {
         self.pending_indoor_finish_loading_since = None;
         self.pending_indoor_overlay_sync = false;
         self.pending_remodel_container = None;
+        self.synced_indoor_state = None;
     }
 
     /// Cancels any pending same-territory indoor re-entry bounce across explicit switches/exits.
@@ -396,6 +398,11 @@ mod tests {
                 preserve_rot: None,
                 ready_at: None,
             }),
+            synced_indoor_state: Some(crate::housing_sim::live_diff::SyncedIndoorState::from_db(
+                &crate::housing_sim::db::HousingEstateRow::default(),
+                343,
+                &[],
+            )),
             ..Default::default()
         };
 
@@ -406,6 +413,7 @@ mod tests {
         assert!(session.pending_indoor_finish_loading_since.is_none());
         assert!(!session.pending_indoor_overlay_sync);
         assert!(session.pending_remodel_container.is_none());
+        assert!(session.synced_indoor_state.is_none());
         assert!(session.pending_same_zone_indoor_reentry.is_some());
 
         session.clear_pending_indoor_reentry();
