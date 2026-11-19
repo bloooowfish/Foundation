@@ -798,12 +798,11 @@ async fn cmd_undo(connection: &mut ZoneConnection) {
     match restored {
         Ok((snap_id, _)) => {
             if let Some(ref hub) = connection.housing_hub {
-                hub.emit_event(HousingSseEvent {
-                    kind: "snapshot_restored".to_string(),
-                    land_ident: Some(ident),
-                    message: format!("Restored snapshot #{snap_id}"),
-                    session: None,
-                });
+                hub.emit_event(HousingSseEvent::new(
+                    "snapshot_restored",
+                    Some(ident),
+                    format!("Restored snapshot #{snap_id}"),
+                ));
             }
             execute_housing_reload(connection, Some(ident), ReloadMode::Auto, true, false).await;
             connection
@@ -1215,10 +1214,10 @@ async fn cmd_preset(connection: &mut ZoneConnection, args: &[String]) {
         Ok((prepared, snap_id)) => {
             if let Some(ref hub) = connection.housing_hub {
                 *hub.last_applied_preset.lock() = Some((resolved_path.clone(), scope));
-                hub.emit_event(HousingSseEvent {
-                    kind: "preset_applied".to_string(),
-                    land_ident: Some(ident),
-                    message: format!(
+                hub.emit_event(HousingSseEvent::new(
+                    "preset_applied",
+                    Some(ident),
+                    format!(
                         "Applied {} (indoor={}/{}, outdoor={}/{}, snap={:?})",
                         resolved_path.display(),
                         prepared.preview.interior_resolved_count,
@@ -1227,8 +1226,7 @@ async fn cmd_preset(connection: &mut ZoneConnection, args: &[String]) {
                         prepared.preview.exterior_input_count,
                         snap_id,
                     ),
-                    session: None,
-                });
+                ));
             }
             connection
                 .send_notice(&format!(

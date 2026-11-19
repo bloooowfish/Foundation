@@ -28,8 +28,8 @@ use super::commands::try_handle_housing_chat_command;
 use super::containers::{
     EXTERIOR_STOREROOM_CONTAINERS, INTERIOR_STOREROOM_CONTAINERS, container_from_i32,
     container_from_u16, flat_slot_for_placed_container, is_appearance_container,
-    is_housing_container, is_storeroom_container, placed_container_for_flat_slot,
-    storeroom_slots_per_page,
+    is_housing_container, is_interior_placed_container, is_storeroom_container,
+    placed_container_for_flat_slot, storeroom_slots_per_page,
 };
 use super::db::{
     AquariumObjectState, FurnitureObjectData, HousingEstateRow, HousingFurnitureRow,
@@ -45,11 +45,11 @@ use super::fixtures::{
 use super::flows::{
     build_selection_from_row, complete_deferred_indoor_tail_on_remodel, connection_catalog,
     ensure_local_apartment_estate, ensure_local_plot_estate, execute_housing_reload,
-    give_sample_kit_to_connection, mutate_synced_indoor_slot, patch_synced_indoor_meta,
-    patch_synced_indoor_slot, publish_session_snapshot, push_indoor_live_refresh,
-    rebuild_house_inventory_from_db, remove_synced_indoor_slot, send_apartment_list_from_db,
-    send_housing_placard_info, send_housing_ward_info, send_owned_housing,
-    sync_current_overlays_for_connection, target_indoor_territory_for_estate,
+    execute_housing_reload_with_source, give_sample_kit_to_connection, mutate_synced_indoor_slot,
+    patch_synced_indoor_meta, patch_synced_indoor_slot, publish_session_snapshot,
+    push_indoor_live_refresh, rebuild_house_inventory_from_db, remove_synced_indoor_slot,
+    send_apartment_list_from_db, send_housing_placard_info, send_housing_ward_info,
+    send_owned_housing, sync_current_overlays_for_connection, target_indoor_territory_for_estate,
     unlock_online_connection, warp_into_estate_interior, warp_to_apartment_outdoor,
     warp_to_estate_outdoor,
 };
@@ -63,7 +63,10 @@ use super::plots::{
     is_apartment_lobby_territory, is_apartment_territory, is_house_interior_territory,
     nearest_plot_to_position, nudge_plot_entrance_exit, plot_spec, wrap_angle_radians,
 };
-use super::session::{HousingSimFromServer, HousingSimToServer, HousingSseEvent, ReloadMode};
+use super::session::{
+    HousingBridgeDelta, HousingBridgeMoveItem, HousingSimFromServer, HousingSimToServer,
+    HousingSseEvent, ReloadMode,
+};
 
 /// Intercepts housing-related client zone IPC packets before upstream default match arms.
 /// Returns `true` if handled completely; returns `false` to let upstream continue normal handling.
@@ -378,6 +381,16 @@ async fn handle_client_trigger(
                         })
                         .await;
                     patch_synced_indoor_meta(connection, &est);
+                    emit_game_delta(
+                        connection,
+                        "layout_changed",
+                        est.land_ident,
+                        format!("실내 조명 변경 ({clamped})"),
+                        HousingBridgeDelta::LayoutChanged {
+                            indoors: true,
+                            reason: "light_level".to_string(),
+                        },
+                    );
                 }
             }
             true
@@ -493,6 +506,16 @@ async fn handle_client_trigger(
                     false,
                 )
                 .await;
+                emit_game_delta(
+                    connection,
+                    "layout_changed",
+                    est.land_ident,
+                    format!("실내 양식 변경 (#{row_id})"),
+                    HousingBridgeDelta::LayoutChanged {
+                        indoors: true,
+                        reason: "interior_pattern".to_string(),
+                    },
+                );
             }
             true
         }
@@ -550,6 +573,42 @@ fn send_item_update_for(
 fn decode_cstr(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+fn emit_game_delta(
+    connection: &ZoneConnection,
+    kind: &str,
+    land_ident: i32,
+    message: impl Into<String>,
+    delta: HousingBridgeDelta,
+) {
+    if let Some(ref hub) = connection.housing_hub {
+        hub.emit_event(
+            HousingSseEvent::new(kind, Some(land_ident), message)
+                .with_source(Some("game".to_string()))
+                .with_delta(delta),
+        );
+    }
+}
+
+fn local_transform_for_estate(
+    estate: &HousingEstateRow,
+    indoors: bool,
+    world_pos: Position,
+    world_rot: f32,
+) -> (Position, f32) {
+    if indoors || estate.is_apartment {
+        return (world_pos, world_rot);
+    }
+    if let Some(spec) = plot_spec(
+        estate.territory_type_id as u16,
+        estate.division as u8,
+        estate.plot_index as u8,
+    ) {
+        spec.world_to_local(world_pos, world_rot)
+    } else {
+        (world_pos, world_rot)
+    }
 }
 
 fn sanitize_transform(position: Position, rotation: f32) -> (Position, f32) {
@@ -983,6 +1042,18 @@ async fn handle_place_furniture(
     if indoors && let Some(ref row) = placed_row {
         patch_synced_indoor_slot(connection, estate.land_ident, row);
     }
+    emit_game_delta(
+        connection,
+        "furniture_added",
+        estate.land_ident,
+        format!("가구 배치 (#{free_flat})"),
+        HousingBridgeDelta::FurnitureAdded {
+            indoors,
+            flat_slot: free_flat,
+            item_id: placed_item.item_id,
+            catalog_id: cat_id,
+        },
+    );
     true
 }
 
@@ -1116,6 +1187,19 @@ async fn handle_remove_or_store_furniture(
         if indoors {
             remove_synced_indoor_slot(connection, estate.land_ident, storage_id, slot);
         }
+        if let Some(flat_slot) = removed_flat_slot {
+            emit_game_delta(
+                connection,
+                "furniture_removed",
+                estate.land_ident,
+                format!("가구 창고 보관 (#{flat_slot})"),
+                HousingBridgeDelta::FurnitureRemoved {
+                    indoors,
+                    flat_slot,
+                    item_id: returned_item.item_id,
+                },
+            );
+        }
         return true;
     }
 
@@ -1215,6 +1299,19 @@ async fn handle_remove_or_store_furniture(
     if indoors {
         remove_synced_indoor_slot(connection, estate.land_ident, storage_id, slot);
     }
+    if let Some(flat_slot) = removed_flat_slot {
+        emit_game_delta(
+            connection,
+            "furniture_removed",
+            estate.land_ident,
+            format!("가구 회수 (#{flat_slot})"),
+            HousingBridgeDelta::FurnitureRemoved {
+                indoors,
+                flat_slot,
+                item_id: returned_item.item_id,
+            },
+        );
+    }
     true
 }
 
@@ -1313,6 +1410,41 @@ async fn handle_translate_furniture(
             },
         );
     }
+    let catalog = connection_catalog(connection);
+    let item_id = connection
+        .player_data
+        .house_inventory
+        .get_item(container, slot_in_page)
+        .map(|i| i.item_id)
+        .unwrap_or(0);
+    let catalog_id = if item_id != 0 {
+        catalog.furniture_catalog_id(item_id, indoors).unwrap_or(0)
+    } else {
+        0
+    };
+    let (local_pos, local_rot) = local_transform_for_estate(&estate, indoors, position, rotation);
+    emit_game_delta(
+        connection,
+        "furniture_moved",
+        estate.land_ident,
+        format!("가구 이동 (#{flat_slot})"),
+        HousingBridgeDelta::FurnitureMoved {
+            indoors,
+            moves: vec![HousingBridgeMoveItem {
+                flat_slot,
+                item_id,
+                catalog_id,
+                pos_x: position.0.x,
+                pos_y: position.0.y,
+                pos_z: position.0.z,
+                rotation,
+                local_x: local_pos.0.x,
+                local_y: local_pos.0.y,
+                local_z: local_pos.0.z,
+                local_rotation: local_rot,
+            }],
+        },
+    );
     true
 }
 
@@ -1395,6 +1527,8 @@ async fn handle_batch_translate(
             }),
         ))
         .await;
+    let catalog = connection_catalog(connection);
+    let mut delta_moves = Vec::with_capacity(synced_updates.len());
     for (container, slot_in_page, position, rotation) in synced_updates {
         mutate_synced_indoor_slot(
             connection,
@@ -1406,6 +1540,44 @@ async fn handle_batch_translate(
                 s.pos_y = position.0.y;
                 s.pos_z = position.0.z;
                 s.rotation = rotation;
+            },
+        );
+        if let Some(flat_slot) = flat_slot_for_placed_container(container, slot_in_page) {
+            let item_id = connection
+                .player_data
+                .house_inventory
+                .get_item(container, slot_in_page)
+                .map(|i| i.item_id)
+                .unwrap_or(0);
+            let catalog_id = if item_id != 0 {
+                catalog.furniture_catalog_id(item_id, true).unwrap_or(0)
+            } else {
+                0
+            };
+            delta_moves.push(HousingBridgeMoveItem {
+                flat_slot,
+                item_id,
+                catalog_id,
+                pos_x: position.0.x,
+                pos_y: position.0.y,
+                pos_z: position.0.z,
+                rotation,
+                local_x: position.0.x,
+                local_y: position.0.y,
+                local_z: position.0.z,
+                local_rotation: rotation,
+            });
+        }
+    }
+    if !delta_moves.is_empty() {
+        emit_game_delta(
+            connection,
+            "furniture_moved",
+            estate.land_ident,
+            format!("가구 일괄 이동 ({}개)", delta_moves.len()),
+            HousingBridgeDelta::FurnitureMoved {
+                indoors: true,
+                moves: delta_moves,
             },
         );
     }
@@ -1515,6 +1687,16 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
                         ServerZoneIpcData::HousingExteriorAppearanceUpdate(pkt),
                     ))
                     .await;
+                emit_game_delta(
+                    connection,
+                    "layout_changed",
+                    estate.land_ident,
+                    "외장 염색 변경",
+                    HousingBridgeDelta::LayoutChanged {
+                        indoors: false,
+                        reason: "exterior_dyed".to_string(),
+                    },
+                );
             }
         } else if info.target_container == ContainerType::HousingInteriorAppearance {
             let updated_item = connection
@@ -1550,6 +1732,16 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
                 ))
                 .await;
             patch_synced_indoor_meta(connection, &est);
+            emit_game_delta(
+                connection,
+                "layout_changed",
+                est.land_ident,
+                "내장 염색 변경",
+                HousingBridgeDelta::LayoutChanged {
+                    indoors: true,
+                    reason: "interior_dyed".to_string(),
+                },
+            );
         }
         return true;
     }
@@ -1600,7 +1792,10 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
         ))
         .await;
     let zone_id = connection.player_data.volatile.zone_id as u16;
-    if is_house_interior_territory(zone_id) || is_apartment_territory(zone_id) {
+    let indoors = is_house_interior_territory(zone_id)
+        || is_apartment_territory(zone_id)
+        || is_interior_placed_container(info.target_container);
+    if indoors {
         mutate_synced_indoor_slot(
             connection,
             estate.land_ident,
@@ -1608,6 +1803,29 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
             info.target_slot,
             |s| {
                 s.stain = stain_id;
+            },
+        );
+    }
+    if let Some(flat_slot) = flat_slot_for_placed_container(info.target_container, info.target_slot)
+    {
+        let catalog = connection_catalog(connection);
+        let item_id = updated_item.map(|i| i.item_id).unwrap_or(0);
+        let color_hex = if stain_id > 0 {
+            catalog.stain_rgba_hex(stain_id)
+        } else {
+            None
+        };
+        emit_game_delta(
+            connection,
+            "furniture_dyed",
+            estate.land_ident,
+            format!("가구 염색 (#{flat_slot})"),
+            HousingBridgeDelta::FurnitureDyed {
+                indoors,
+                flat_slot,
+                item_id,
+                stain: stain_id,
+                color_hex,
             },
         );
     }
@@ -1650,6 +1868,16 @@ async fn handle_interior_remodel(
             let _ = save_estate(db.connection_mut(), &updated);
         }
         push_indoor_live_refresh(connection, &updated).await;
+        emit_game_delta(
+            connection,
+            "layout_changed",
+            updated.land_ident,
+            "실내 내장재 변경",
+            HousingBridgeDelta::LayoutChanged {
+                indoors: true,
+                reason: "interior_remodel".to_string(),
+            },
+        );
     }
 
     connection
@@ -1697,6 +1925,16 @@ async fn handle_exterior_remodel(
             ))
             .await;
         rebuild_house_inventory_from_db(connection, &updated, false);
+        emit_game_delta(
+            connection,
+            "layout_changed",
+            updated.land_ident,
+            "실외 외장재 변경",
+            HousingBridgeDelta::LayoutChanged {
+                indoors: false,
+                reason: "exterior_remodel".to_string(),
+            },
+        );
     }
 
     connection
@@ -1925,6 +2163,16 @@ async fn handle_update_aquarium(connection: &mut ZoneConnection, pkt: &UpdateAqu
             |s| {
                 s.material_item_key = trim_item_id as u16;
                 s.object_data_json = obj_json;
+            },
+        );
+        emit_game_delta(
+            connection,
+            "layout_changed",
+            estate.land_ident,
+            "수조 설정 변경",
+            HousingBridgeDelta::LayoutChanged {
+                indoors: true,
+                reason: "aquarium_updated".to_string(),
             },
         );
     }
@@ -2292,11 +2540,28 @@ pub(crate) fn handle_server_housing_message(
                 }
             }
         }
+        HousingSimToServer::BroadcastEstateLiveMoves {
+            land_ident,
+            indoors,
+            moves,
+        } => {
+            let mut network = network.lock();
+            for (handle, _state) in network.clients.values_mut() {
+                let _ = handle.send(FromServer::HousingSim(
+                    HousingSimFromServer::ApplyLiveMoves {
+                        land_ident: *land_ident,
+                        indoors: *indoors,
+                        moves: moves.clone(),
+                    },
+                ));
+            }
+        }
         HousingSimToServer::NotifyClientsEstateReload {
             land_ident,
             mode,
             preserve_player_pos,
             enter_if_elsewhere,
+            source,
         } => {
             let mut network = network.lock();
             for (handle, _state) in network.clients.values_mut() {
@@ -2306,6 +2571,7 @@ pub(crate) fn handle_server_housing_message(
                         mode: *mode,
                         preserve_player_pos: *preserve_player_pos,
                         force_enter: *enter_if_elsewhere,
+                        source: source.clone(),
                     },
                 ));
             }
@@ -2343,6 +2609,7 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
             mode,
             preserve_player_pos,
             force_enter,
+            source,
         } => {
             let estate = {
                 let mut db = connection.database.lock();
@@ -2371,12 +2638,13 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
             let matches_owner = est.owner_content_id == connection.player_data.character.content_id;
 
             if matches_active || matches_ward || (*force_enter && matches_owner) {
-                execute_housing_reload(
+                execute_housing_reload_with_source(
                     connection,
                     Some(*land_ident),
                     *mode,
                     *preserve_player_pos,
                     *force_enter && matches_owner,
+                    source.as_deref(),
                 )
                 .await;
                 send_owned_housing(connection).await;
@@ -2390,6 +2658,144 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
                     TerritoryIntendedUse::Town
                 };
                 publish_session_snapshot(connection, intended);
+            }
+        }
+        HousingSimFromServer::ApplyLiveMoves {
+            land_ident,
+            indoors,
+            moves,
+        } => {
+            if moves.is_empty() {
+                return;
+            }
+            let current_zone_id = connection.player_data.volatile.zone_id as u16;
+            let currently_indoors = is_house_interior_territory(current_zone_id)
+                || is_apartment_territory(current_zone_id);
+            if *indoors != currently_indoors {
+                return;
+            }
+
+            if *indoors {
+                let Some(active) = connection.housing_sim.active_estate.clone() else {
+                    return;
+                };
+                if active.land_ident != *land_ident {
+                    return;
+                }
+                let catalog = connection_catalog(connection);
+                let mut segments = Vec::with_capacity(moves.len());
+                let mut overlay_moves = Vec::new();
+                for m in moves {
+                    let position = Position(glam::Vec3A::new(m.pos_x, m.pos_y, m.pos_z));
+                    segments.push(ServerZoneIpcSegment::new(
+                        ServerZoneIpcData::FurnitureTranslatedForObserver(
+                            FurnitureTranslatedForObserver {
+                                rotation: m.rotation,
+                                plot_and_index: m.flat_slot,
+                                outdoor_index: (m.flat_slot & 0xFF) as u8,
+                                plot_number: (m.flat_slot >> 8) as u8,
+                                unk1: [0; 2],
+                                position,
+                                unk2: [0; 4],
+                            },
+                        ),
+                    ));
+                    if let Some((ctype, slot_in_page)) =
+                        placed_container_for_flat_slot(true, m.flat_slot)
+                    {
+                        mutate_synced_indoor_slot(
+                            connection,
+                            *land_ident,
+                            ctype,
+                            slot_in_page,
+                            |s| {
+                                s.pos_x = m.pos_x;
+                                s.pos_y = m.pos_y;
+                                s.pos_z = m.pos_z;
+                                s.rotation = m.rotation;
+                            },
+                        );
+                        if let Some(cat_id) = connection
+                            .player_data
+                            .house_inventory
+                            .get_item(ctype, slot_in_page)
+                            .filter(|i| i.item_id != 0)
+                            .and_then(|i| catalog.furniture_catalog_id(i.item_id, true))
+                            && catalog.is_interactable(cat_id, true)
+                        {
+                            overlay_moves.push((m.flat_slot, position, m.rotation));
+                        }
+                    }
+                }
+                if !segments.is_empty() {
+                    connection.send_ipcs_self(&segments).await;
+                }
+                for (slot, position, rotation) in overlay_moves {
+                    let _ = connection
+                        .handle
+                        .send(ToServer::HousingSim(
+                            HousingSimToServer::TranslateSingleOverlay {
+                                actor_id: connection.player_data.character.actor_id,
+                                key: HousingOverlayKey {
+                                    indoors: true,
+                                    ward_index: active.ward_index,
+                                    division: active.division,
+                                    plot_index: active.plot_index,
+                                    slot,
+                                },
+                                position,
+                                rotation,
+                            },
+                        ))
+                        .await;
+                }
+            } else {
+                let estate = {
+                    let mut db = connection.database.lock();
+                    estate_by_land_ident(db.connection_mut(), *land_ident)
+                        .ok()
+                        .flatten()
+                };
+                let Some(est) = estate else {
+                    return;
+                };
+                if est.is_apartment {
+                    return;
+                }
+                let in_target_ward = connection
+                    .housing_sim
+                    .display_ward_context
+                    .is_some_and(|w| {
+                        w.territory_type_id == est.territory_type_id as u16
+                            && w.ward_index == est.ward_index as u8
+                            && w.division == est.division.clamp(0, 1) as u8
+                    });
+                if !in_target_ward {
+                    return;
+                }
+                let raw_plot = raw_plot_index(&est);
+                let segments: Vec<ServerZoneIpcSegment> = moves
+                    .iter()
+                    .map(|m| {
+                        let plot_and_index = ((raw_plot as u16) << 8) | (m.flat_slot & 0x00FF);
+                        ServerZoneIpcSegment::new(
+                            ServerZoneIpcData::FurnitureTranslatedForObserver(
+                                FurnitureTranslatedForObserver {
+                                    rotation: m.rotation,
+                                    plot_and_index,
+                                    outdoor_index: (plot_and_index & 0xFF) as u8,
+                                    plot_number: (plot_and_index >> 8) as u8,
+                                    unk1: [0; 2],
+                                    position: Position(glam::Vec3A::new(m.pos_x, m.pos_y, m.pos_z)),
+                                    unk2: [0; 4],
+                                },
+                            ),
+                        )
+                    })
+                    .collect();
+                if !segments.is_empty() {
+                    connection.send_ipcs_self(&segments).await;
+                }
             }
         }
         HousingSimFromServer::SwitchActiveEstate {
@@ -2626,12 +3032,7 @@ pub async fn handle_lua_housing_exit(connection: &mut ZoneConnection) {
         ))
         .await;
     let _ = (
-        HousingSseEvent {
-            kind: String::new(),
-            land_ident: None,
-            message: String::new(),
-            session: None,
-        },
+        HousingSseEvent::new("", None, ""),
         ensure_local_apartment_estate,
         target_indoor_territory_for_estate,
         LuaTask::FinishDyeing,

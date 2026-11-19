@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use kawari::common::{ContainerType, HouseId, ObjectId, Position, TerritoryIntendedUse};
 use kawari::config::get_config;
@@ -124,6 +125,65 @@ pub struct OnlineSessionSnapshot {
     pub authoritative_ward_context: Option<WardContext>,
 }
 
+/// Live transform entry carried in SSE deltas for external bridge synchronization.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HousingBridgeMoveItem {
+    pub flat_slot: u16,
+    pub item_id: u32,
+    pub catalog_id: u16,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub pos_z: f32,
+    pub rotation: f32,
+    pub local_x: f32,
+    pub local_y: f32,
+    pub local_z: f32,
+    pub local_rotation: f32,
+}
+
+/// Structured delta metadata included on SSE events for bidirectional external bridges (e.g. ReMakePlace).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HousingBridgeDelta {
+    FurnitureMoved {
+        indoors: bool,
+        moves: Vec<HousingBridgeMoveItem>,
+    },
+    FurnitureDyed {
+        indoors: bool,
+        flat_slot: u16,
+        item_id: u32,
+        stain: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color_hex: Option<String>,
+    },
+    FurnitureAdded {
+        indoors: bool,
+        flat_slot: u16,
+        item_id: u32,
+        catalog_id: u16,
+    },
+    FurnitureRemoved {
+        indoors: bool,
+        flat_slot: u16,
+        item_id: u32,
+    },
+    LayoutChanged {
+        indoors: bool,
+        reason: String,
+    },
+}
+
+/// Lightweight live transform update dispatched directly to online zone connections.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveFurnitureMove {
+    pub flat_slot: u16,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub pos_z: f32,
+    pub rotation: f32,
+}
+
 /// Server-Sent Event payload broadcast to overlay & dashboard subscribers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HousingSseEvent {
@@ -132,6 +192,50 @@ pub struct HousingSseEvent {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<OnlineSessionSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<HousingBridgeDelta>,
+}
+
+impl HousingSseEvent {
+    pub fn new(
+        kind: impl Into<String>,
+        land_ident: Option<i32>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            land_ident,
+            message: message.into(),
+            session: None,
+            source: None,
+            revision: None,
+            delta: None,
+        }
+    }
+
+    pub fn with_session(mut self, session: OnlineSessionSnapshot) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    pub fn with_source(mut self, source: Option<String>) -> Self {
+        self.source = source;
+        self
+    }
+
+    pub fn with_revision(mut self, revision: u64) -> Self {
+        self.revision = Some(revision);
+        self
+    }
+
+    pub fn with_delta(mut self, delta: HousingBridgeDelta) -> Self {
+        self.delta = Some(delta);
+        self
+    }
 }
 
 /// Messages sent from `ZoneConnection` or HTTP handlers into `server_main_loop`.
@@ -202,11 +306,17 @@ pub enum HousingSimToServer {
         indoors_only: bool,
         packets: Vec<kawari::ipc::zone::ServerZoneIpcSegment>,
     },
+    BroadcastEstateLiveMoves {
+        land_ident: i32,
+        indoors: bool,
+        moves: Vec<LiveFurnitureMove>,
+    },
     NotifyClientsEstateReload {
         land_ident: i32,
         mode: ReloadMode,
         preserve_player_pos: bool,
         enter_if_elsewhere: bool,
+        source: Option<String>,
     },
     UnlockClientSession {
         content_id: Option<u64>,
@@ -225,6 +335,12 @@ pub enum HousingSimFromServer {
         mode: ReloadMode,
         preserve_player_pos: bool,
         force_enter: bool,
+        source: Option<String>,
+    },
+    ApplyLiveMoves {
+        land_ident: i32,
+        indoors: bool,
+        moves: Vec<LiveFurnitureMove>,
     },
     SwitchActiveEstate {
         land_ident: i32,
@@ -244,6 +360,7 @@ pub struct HousingSimHub {
     pub game_data: Option<Arc<Mutex<GameData>>>,
     pub sessions: RwLock<HashMap<ClientId, OnlineSessionSnapshot>>,
     pub event_tx: broadcast::Sender<HousingSseEvent>,
+    pub revision_seq: AtomicU64,
     pub last_applied_preset: Mutex<Option<(PathBuf, PresetScope)>>,
     pub preset_roots: RwLock<Vec<PathBuf>>,
     #[cfg(test)]
@@ -264,6 +381,7 @@ impl HousingSimHub {
             game_data: Some(game_data),
             sessions: RwLock::new(HashMap::new()),
             event_tx,
+            revision_seq: AtomicU64::new(1),
             last_applied_preset: Mutex::new(None),
             preset_roots: RwLock::new(default_roots),
             #[cfg(test)]
@@ -284,10 +402,19 @@ impl HousingSimHub {
             game_data: None,
             sessions: RwLock::new(HashMap::new()),
             event_tx,
+            revision_seq: AtomicU64::new(1),
             last_applied_preset: Mutex::new(None),
             preset_roots: RwLock::new(Vec::new()),
             catalog_override: Some(Arc::new(catalog)),
         }
+    }
+
+    pub fn next_revision(&self) -> u64 {
+        self.revision_seq.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn current_revision(&self) -> u64 {
+        self.revision_seq.load(Ordering::Relaxed)
     }
 
     pub fn resolve_catalog(&self) -> Arc<super::gamedata_ext::HousingCatalog> {
@@ -307,12 +434,13 @@ impl HousingSimHub {
 
     pub fn update_session(&self, client_id: ClientId, snap: OnlineSessionSnapshot) {
         self.sessions.write().insert(client_id, snap.clone());
-        self.emit_event(HousingSseEvent {
-            kind: "session_state".to_string(),
-            land_ident: snap.active_estate.as_ref().map(|e| e.land_ident),
-            message: format!("{} @ zone {}", snap.character_name, snap.zone_id),
-            session: Some(snap),
-        });
+        let evt = HousingSseEvent::new(
+            "session_state",
+            snap.active_estate.as_ref().map(|e| e.land_ident),
+            format!("{} @ zone {}", snap.character_name, snap.zone_id),
+        )
+        .with_session(snap);
+        self.emit_event(evt);
     }
 
     /// Updates `active_estate` on matching online session snapshots immediately and notifies SSE subscribers.
@@ -332,23 +460,23 @@ impl HousingSimHub {
             }
         }
         for snap in updated_snaps {
-            self.emit_event(HousingSseEvent {
-                kind: "session_state".to_string(),
-                land_ident: Some(selection.land_ident),
-                message: format!("{} @ zone {}", snap.character_name, snap.zone_id),
-                session: Some(snap),
-            });
+            let evt = HousingSseEvent::new(
+                "session_state",
+                Some(selection.land_ident),
+                format!("{} @ zone {}", snap.character_name, snap.zone_id),
+            )
+            .with_session(snap);
+            self.emit_event(evt);
         }
     }
 
     pub fn remove_session(&self, client_id: ClientId) {
         if let Some(removed) = self.sessions.write().remove(&client_id) {
-            self.emit_event(HousingSseEvent {
-                kind: "session_offline".to_string(),
-                land_ident: removed.active_estate.as_ref().map(|e| e.land_ident),
-                message: format!("{} disconnected", removed.character_name),
-                session: None,
-            });
+            self.emit_event(HousingSseEvent::new(
+                "session_offline",
+                removed.active_estate.as_ref().map(|e| e.land_ident),
+                format!("{} disconnected", removed.character_name),
+            ));
         }
     }
 
@@ -365,7 +493,10 @@ impl HousingSimHub {
         sessions
     }
 
-    pub fn emit_event(&self, evt: HousingSseEvent) {
+    pub fn emit_event(&self, mut evt: HousingSseEvent) {
+        if evt.revision.is_none() {
+            evt.revision = Some(self.next_revision());
+        }
         let _ = self.event_tx.send(evt);
     }
 

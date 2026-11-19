@@ -9,23 +9,27 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::stream::{self, Stream};
-use kawari::common::HousingFlag;
+use kawari::common::{HousingFlag, Position};
 use kawari::ipc::zone::PlotSize;
 use serde_derive::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use crate::common::ToServer;
 
+use super::containers::{
+    container_from_i32, flat_slot_for_placed_container, is_exterior_placed_container,
+    is_interior_placed_container, placed_container_for_flat_slot,
+};
 use super::db::{
-    EnsureEstateSpec, HousingEstateRow, HousingFurnitureRow, MAX_ESTATE_GREETING_BYTES,
-    MAX_ESTATE_NAME_BYTES, SnapshotSummary, clamp_utf8, create_snapshot, ensure_estate,
-    estate_by_land_ident, list_all_estates, list_furniture_for_estate,
+    EnsureEstateSpec, EstateRemakeMeta, FurnitureRemakeMeta, HousingEstateRow, HousingFurnitureRow,
+    MAX_ESTATE_GREETING_BYTES, MAX_ESTATE_NAME_BYTES, SnapshotSummary, clamp_utf8, create_snapshot,
+    ensure_estate, estate_by_land_ident, list_all_estates, list_furniture_for_estate,
     list_placed_furniture_in_scope, list_snapshots, reset_estate_scope, restore_latest_snapshot,
-    restore_snapshot, save_estate,
+    restore_snapshot, save_estate, update_furniture_position,
 };
 use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
 use super::flows::{
-    apply_preset_layout_with_catalog, build_selection_from_row, target_indoor_territory_for_estate,
+    apply_preset_layout_with_options, build_selection_from_row, target_indoor_territory_for_estate,
     unlock_characters_in_database,
 };
 use super::gamedata_ext::{
@@ -34,7 +38,7 @@ use super::gamedata_ext::{
 };
 use super::plots::{
     canonical_plot_for_district_and_size, default_district_for_zone, parse_district_territory,
-    plot_spec,
+    plot_spec, wrap_angle_radians,
 };
 use super::remake_place::{
     PresetFileSummary, PresetScope, ReMakePlaceLayout, ReMakePlacePreviewReport,
@@ -42,7 +46,8 @@ use super::remake_place::{
     resolve_safe_preset_path, sanitize_export_filename, scan_preset_directory,
 };
 use super::session::{
-    HousingSimHub, HousingSimToServer, HousingSseEvent, OnlineSessionSnapshot, ReloadMode,
+    HousingBridgeDelta, HousingBridgeMoveItem, HousingSimHub, HousingSimToServer, HousingSseEvent,
+    LiveFurnitureMove, OnlineSessionSnapshot, ReloadMode,
 };
 
 #[derive(Debug, Serialize)]
@@ -91,6 +96,11 @@ pub fn router(hub: Arc<HousingSimHub>) -> Router {
             "/estates/{land_ident}/export/remakeplace",
             get(export_remakeplace_get_handler).post(export_remakeplace_post_handler),
         )
+        .route(
+            "/estates/{land_ident}/bridge/snapshot",
+            get(bridge_snapshot_handler),
+        )
+        .route("/estates/{land_ident}/live/move", post(live_move_handler))
         .layer(CorsLayer::permissive())
         .with_state(hub)
 }
@@ -311,10 +321,10 @@ async fn ensure_estate_handler(
     Json(req): Json<EnsureEstateRequest>,
 ) -> ApiResult<HousingEstateRow> {
     let row = ensure_estate_row_with_req(&hub, &req)?;
-    hub.emit_event(HousingSseEvent {
-        kind: "estate_ensured".to_string(),
-        land_ident: Some(row.land_ident),
-        message: format!(
+    hub.emit_event(HousingSseEvent::new(
+        "estate_ensured",
+        Some(row.land_ident),
+        format!(
             "하우스 준비 완료: {}",
             if row.estate_name.is_empty() {
                 "테스트 하우스"
@@ -322,8 +332,7 @@ async fn ensure_estate_handler(
                 &row.estate_name
             }
         ),
-        session: None,
-    });
+    ));
     Ok(Json(row))
 }
 
@@ -424,10 +433,10 @@ async fn switch_session_handler(
         target_content_id,
         build_selection_from_row(&estate, go_indoor_hint),
     );
-    hub.emit_event(HousingSseEvent {
-        kind: "session_switched".to_string(),
-        land_ident: Some(estate.land_ident),
-        message: format!(
+    hub.emit_event(HousingSseEvent::new(
+        "session_switched",
+        Some(estate.land_ident),
+        format!(
             "활성 하우스 전환: {}",
             if estate.estate_name.is_empty() {
                 "테스트 하우스"
@@ -435,8 +444,7 @@ async fn switch_session_handler(
                 &estate.estate_name
             }
         ),
-        session: None,
-    });
+    ));
     hub.send_to_server(ToServer::HousingSim(
         HousingSimToServer::SwitchClientEstate {
             content_id: target_content_id,
@@ -496,16 +504,15 @@ async fn unlock_all_session_handler(
     ))
     .await;
 
-    hub.emit_event(HousingSseEvent {
-        kind: "session_unlocked".to_string(),
-        land_ident: None,
-        message: if names.is_empty() {
+    hub.emit_event(HousingSseEvent::new(
+        "session_unlocked",
+        None,
+        if names.is_empty() {
             "해금 대상 캐릭터가 없습니다.".to_string()
         } else {
             format!("전체 해금 완료: {}", names.join(", "))
         },
-        session: None,
-    });
+    ));
 
     Ok(Json(UnlockAllSessionResponse {
         unlocked_characters: names.len(),
@@ -558,12 +565,11 @@ async fn give_kit_handler(
     ))
     .await;
 
-    hub.emit_event(HousingSseEvent {
-        kind: "kit_granted".to_string(),
-        land_ident: None,
-        message: format!("샘플 가구 키트 전송 완료 ({normalized})"),
-        session: None,
-    });
+    hub.emit_event(HousingSseEvent::new(
+        "kit_granted",
+        None,
+        format!("샘플 가구 키트 전송 완료 ({normalized})"),
+    ));
 
     Ok(Json(GiveKitResponse {
         kind: normalized,
@@ -616,6 +622,7 @@ pub struct PatchEstateRequest {
     pub exterior: Option<StoredHouseExterior>,
     pub interior: Option<StoredHouseInterior>,
     pub reload_mode: ReloadMode,
+    pub source: Option<String>,
 }
 
 async fn patch_estate_handler(
@@ -714,12 +721,14 @@ async fn patch_estate_handler(
     } else {
         req.reload_mode
     };
-    hub.emit_event(HousingSseEvent {
-        kind: "estate_updated".to_string(),
-        land_ident: Some(land_ident),
-        message: "하우스 설정이 업데이트되었습니다.".to_string(),
-        session: None,
-    });
+    hub.emit_event(
+        HousingSseEvent::new(
+            "estate_updated",
+            Some(land_ident),
+            "하우스 설정이 업데이트되었습니다.",
+        )
+        .with_source(req.source.clone()),
+    );
     if mode != ReloadMode::None {
         hub.send_to_server(ToServer::HousingSim(
             HousingSimToServer::NotifyClientsEstateReload {
@@ -727,6 +736,7 @@ async fn patch_estate_handler(
                 mode,
                 preserve_player_pos: true,
                 enter_if_elsewhere: false,
+                source: req.source,
             },
         ))
         .await;
@@ -740,6 +750,7 @@ async fn patch_estate_handler(
 pub struct ResetEstateRequest {
     pub scope: PresetScope,
     pub reload_mode: ReloadMode,
+    pub source: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -803,12 +814,14 @@ async fn reset_estate_handler(
         })?
     };
 
-    hub.emit_event(HousingSseEvent {
-        kind: "estate_reset".to_string(),
-        land_ident: Some(land_ident),
-        message: format!("하우스 비우기 완료 (가구 {removed_count}개 제거)"),
-        session: None,
-    });
+    hub.emit_event(
+        HousingSseEvent::new(
+            "estate_reset",
+            Some(land_ident),
+            format!("하우스 비우기 완료 (가구 {removed_count}개 제거)"),
+        )
+        .with_source(req.source.clone()),
+    );
     if req.reload_mode != ReloadMode::None {
         hub.send_to_server(ToServer::HousingSim(
             HousingSimToServer::NotifyClientsEstateReload {
@@ -816,6 +829,7 @@ async fn reset_estate_handler(
                 mode: req.reload_mode,
                 preserve_player_pos: true,
                 enter_if_elsewhere: false,
+                source: req.source,
             },
         ))
         .await;
@@ -846,6 +860,7 @@ async fn reload_estate_handler(
             mode: req.mode,
             preserve_player_pos: req.preserve_pos.unwrap_or(true),
             enter_if_elsewhere: req.force_enter,
+            source: None,
         },
     ))
     .await;
@@ -926,6 +941,8 @@ pub struct ApplyPresetRequest {
     pub force_enter: bool,
     pub actor_content_id: Option<u64>,
     pub label: Option<String>,
+    pub source: Option<String>,
+    pub skip_snapshot: bool,
 }
 
 #[derive(Serialize)]
@@ -958,7 +975,7 @@ async fn apply_preset_handler(
             .map_err(|e| api_err(StatusCode::BAD_REQUEST, e))?;
         let layout =
             read_layout_file(&resolved).map_err(|e| api_err(StatusCode::BAD_REQUEST, e))?;
-        let res = apply_preset_layout_with_catalog(
+        let res = apply_preset_layout_with_options(
             &hub.database,
             &catalog,
             land_ident,
@@ -966,6 +983,7 @@ async fn apply_preset_handler(
             req.scope,
             content_id,
             &label,
+            req.skip_snapshot,
         )
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, e))?;
         *hub.last_applied_preset.lock() = Some((resolved, req.scope));
@@ -978,7 +996,7 @@ async fn apply_preset_handler(
             req.raw_json.as_deref(),
         )
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, e))?;
-        apply_preset_layout_with_catalog(
+        apply_preset_layout_with_options(
             &hub.database,
             &catalog,
             land_ident,
@@ -986,6 +1004,7 @@ async fn apply_preset_handler(
             req.scope,
             content_id,
             &label,
+            req.skip_snapshot,
         )
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, e))?
     };
@@ -997,19 +1016,21 @@ async fn apply_preset_handler(
             req.reload_mode
         };
 
-    hub.emit_event(HousingSseEvent {
-        kind: "preset_applied".to_string(),
-        land_ident: Some(land_ident),
-        message: format!(
-            "프리셋 적용 완료: '{}' (실내 {}/{}, 정원 {}/{})",
-            label,
-            prepared.preview.interior_resolved_count,
-            prepared.preview.interior_input_count,
-            prepared.preview.exterior_resolved_count,
-            prepared.preview.exterior_input_count,
-        ),
-        session: None,
-    });
+    hub.emit_event(
+        HousingSseEvent::new(
+            "preset_applied",
+            Some(land_ident),
+            format!(
+                "프리셋 적용 완료: '{}' (실내 {}/{}, 정원 {}/{})",
+                label,
+                prepared.preview.interior_resolved_count,
+                prepared.preview.interior_input_count,
+                prepared.preview.exterior_resolved_count,
+                prepared.preview.exterior_input_count,
+            ),
+        )
+        .with_source(req.source.clone()),
+    );
 
     if effective_reload != ReloadMode::None {
         hub.send_to_server(ToServer::HousingSim(
@@ -1018,6 +1039,7 @@ async fn apply_preset_handler(
                 mode: effective_reload,
                 preserve_player_pos: req.preserve_pos.unwrap_or(true),
                 enter_if_elsewhere: req.force_enter,
+                source: req.source,
             },
         ))
         .await;
@@ -1046,6 +1068,7 @@ async fn list_snapshots_handler(
 pub struct RestoreSnapshotRequest {
     pub reload_mode: ReloadMode,
     pub preserve_pos: Option<bool>,
+    pub source: Option<String>,
 }
 
 async fn restore_snapshot_handler(
@@ -1073,12 +1096,14 @@ async fn restore_snapshot_handler(
         label: format!("restored #{snapshot_id}"),
         created_at: restored.updated_at,
     };
-    hub.emit_event(HousingSseEvent {
-        kind: "snapshot_restored".to_string(),
-        land_ident: Some(land_ident),
-        message: format!("스냅샷 #{} 상태로 복원했습니다.", summary.id),
-        session: None,
-    });
+    hub.emit_event(
+        HousingSseEvent::new(
+            "snapshot_restored",
+            Some(land_ident),
+            format!("스냅샷 #{} 상태로 복원했습니다.", summary.id),
+        )
+        .with_source(req.source.clone()),
+    );
     if req.reload_mode != ReloadMode::None {
         hub.send_to_server(ToServer::HousingSim(
             HousingSimToServer::NotifyClientsEstateReload {
@@ -1086,6 +1111,7 @@ async fn restore_snapshot_handler(
                 mode: req.reload_mode,
                 preserve_player_pos: req.preserve_pos.unwrap_or(true),
                 enter_if_elsewhere: false,
+                source: req.source,
             },
         ))
         .await;
@@ -1118,12 +1144,14 @@ async fn undo_estate_handler(
         label: format!("undo #{snap_id}"),
         created_at: restored.updated_at,
     };
-    hub.emit_event(HousingSseEvent {
-        kind: "snapshot_restored".to_string(),
-        land_ident: Some(land_ident),
-        message: format!("실행 취소: 스냅샷 #{snap_id} 상태로 복원했습니다."),
-        session: None,
-    });
+    hub.emit_event(
+        HousingSseEvent::new(
+            "snapshot_restored",
+            Some(land_ident),
+            format!("실행 취소: 스냅샷 #{snap_id} 상태로 복원했습니다."),
+        )
+        .with_source(req.source.clone()),
+    );
     if req.reload_mode != ReloadMode::None {
         hub.send_to_server(ToServer::HousingSim(
             HousingSimToServer::NotifyClientsEstateReload {
@@ -1131,6 +1159,7 @@ async fn undo_estate_handler(
                 mode: req.reload_mode,
                 preserve_player_pos: req.preserve_pos.unwrap_or(true),
                 enter_if_elsewhere: false,
+                source: req.source,
             },
         ))
         .await;
@@ -1226,6 +1255,395 @@ fn resolve_layout_from_request(
         return parse_layout_bytes(&bytes);
     }
     Err("Provide either 'path', 'layout', or 'raw_json'".to_string())
+}
+
+#[derive(Serialize)]
+pub struct BridgeFurnitureSlot {
+    pub flat_slot: u16,
+    pub item_id: u32,
+    pub catalog_id: u16,
+    pub name: String,
+    pub stain: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_hex: Option<String>,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub pos_z: f32,
+    pub rotation: f32,
+    pub local_x: f32,
+    pub local_y: f32,
+    pub local_z: f32,
+    pub local_rotation: f32,
+    pub ue_loc: [f32; 3],
+    pub ue_yaw_deg: f32,
+}
+
+#[derive(Serialize)]
+pub struct BridgeEstateSnapshot {
+    pub land_ident: i32,
+    pub revision: u64,
+    pub territory_type_id: u16,
+    pub plot_size: u8,
+    pub is_apartment: bool,
+    pub house_size: String,
+    pub light_level: i32,
+    pub indoor: Vec<BridgeFurnitureSlot>,
+    pub outdoor: Vec<BridgeFurnitureSlot>,
+}
+
+async fn bridge_snapshot_handler(
+    State(hub): State<Arc<HousingSimHub>>,
+    Path(land_ident): Path<i32>,
+) -> ApiResult<BridgeEstateSnapshot> {
+    let (estate, rows) = {
+        let mut db = hub.database.lock();
+        let conn = db.connection_mut();
+        let est = estate_by_land_ident(conn, land_ident)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "Estate not found"))?;
+        let rows = list_furniture_for_estate(conn, land_ident, Some(true)).unwrap_or_default();
+        (est, rows)
+    };
+
+    let catalog = hub.resolve_catalog();
+    let estate_meta: EstateRemakeMeta =
+        serde_json::from_str(&estate.remake_meta_json).unwrap_or_default();
+    let plot_size_u8 = estate.plot_size.clamp(0, 2) as u8;
+    let house_size = estate_meta.house_size.unwrap_or_else(|| {
+        if estate.is_apartment {
+            "Apartment".to_string()
+        } else {
+            match plot_size_u8 {
+                0 => "Small".to_string(),
+                1 => "Medium".to_string(),
+                _ => "Large".to_string(),
+            }
+        }
+    });
+
+    let plot_origin = if estate.is_apartment {
+        None
+    } else {
+        plot_spec(
+            estate.territory_type_id as u16,
+            estate.division as u8,
+            estate.plot_index as u8,
+        )
+    };
+
+    let mut indoor = Vec::new();
+    let mut outdoor = Vec::new();
+
+    for row in &rows {
+        let Some(ctype) = container_from_i32(row.container_type) else {
+            continue;
+        };
+        let indoors = if is_interior_placed_container(ctype) {
+            true
+        } else if is_exterior_placed_container(ctype) {
+            false
+        } else {
+            continue;
+        };
+        let Some(flat_slot) = flat_slot_for_placed_container(ctype, row.slot.max(0) as u16) else {
+            continue;
+        };
+
+        let item_id = row.item_id.max(0) as u32;
+        let catalog_id = row.catalog_id.max(0) as u16;
+        let name = catalog
+            .items_by_id
+            .get(&item_id)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| format!("Item #{item_id}"));
+        let stain = row.stain.clamp(0, u8::MAX as i32) as u8;
+        let fmeta: FurnitureRemakeMeta =
+            serde_json::from_str(&row.remake_meta_json).unwrap_or_default();
+        let color_hex = fmeta
+            .raw_color_hex
+            .or_else(|| (stain > 0).then(|| catalog.stain_rgba_hex(stain)).flatten());
+
+        let world_pos = Position(glam::Vec3A::new(row.pos_x, row.pos_y, row.pos_z));
+        let (local_pos, local_rot) = if !indoors && let Some(spec) = plot_origin {
+            spec.world_to_local(world_pos, row.rotation)
+        } else {
+            (world_pos, row.rotation)
+        };
+
+        let ue_loc = [
+            local_pos.0.x * 100.0,
+            local_pos.0.z * 100.0,
+            local_pos.0.y * 100.0,
+        ];
+        let ue_yaw_deg = -local_rot.to_degrees();
+
+        let slot_entry = BridgeFurnitureSlot {
+            flat_slot,
+            item_id,
+            catalog_id,
+            name,
+            stain,
+            color_hex,
+            pos_x: row.pos_x,
+            pos_y: row.pos_y,
+            pos_z: row.pos_z,
+            rotation: row.rotation,
+            local_x: local_pos.0.x,
+            local_y: local_pos.0.y,
+            local_z: local_pos.0.z,
+            local_rotation: local_rot,
+            ue_loc,
+            ue_yaw_deg,
+        };
+        if indoors {
+            indoor.push(slot_entry);
+        } else {
+            outdoor.push(slot_entry);
+        }
+    }
+
+    indoor.sort_by_key(|s| s.flat_slot);
+    outdoor.sort_by_key(|s| s.flat_slot);
+
+    Ok(Json(BridgeEstateSnapshot {
+        land_ident,
+        revision: hub.current_revision(),
+        territory_type_id: estate.territory_type_id as u16,
+        plot_size: plot_size_u8,
+        is_apartment: estate.is_apartment,
+        house_size,
+        light_level: estate.light_level,
+        indoor,
+        outdoor,
+    }))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct LiveMoveEntryRequest {
+    pub flat_slot: u16,
+    pub item_id: Option<u32>,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub pos_z: f32,
+    pub rotation: f32,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct LiveMoveRequest {
+    pub source: Option<String>,
+    pub indoors: bool,
+    pub plot_local: bool,
+    pub commit_db: bool,
+    pub moves: Vec<LiveMoveEntryRequest>,
+}
+
+#[derive(Serialize)]
+pub struct LiveMoveResponse {
+    pub ok: bool,
+    pub land_ident: i32,
+    pub revision: u64,
+    pub applied_count: usize,
+}
+
+async fn live_move_handler(
+    State(hub): State<Arc<HousingSimHub>>,
+    Path(land_ident): Path<i32>,
+    Json(req): Json<LiveMoveRequest>,
+) -> ApiResult<LiveMoveResponse> {
+    if req.moves.is_empty() || req.moves.len() > 64 {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "moves must contain between 1 and 64 entries",
+        ));
+    }
+
+    for entry in &req.moves {
+        if !(entry.pos_x.is_finite()
+            && entry.pos_y.is_finite()
+            && entry.pos_z.is_finite()
+            && entry.rotation.is_finite())
+        {
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "All coordinates and rotations must be finite numbers",
+            ));
+        }
+        if placed_container_for_flat_slot(req.indoors, entry.flat_slot).is_none() {
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid flat_slot {}", entry.flat_slot),
+            ));
+        }
+    }
+
+    let estate = {
+        let mut db = hub.database.lock();
+        estate_by_land_ident(db.connection_mut(), land_ident)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "Estate not found"))?
+    };
+
+    let plot_origin = if !req.indoors && !estate.is_apartment {
+        plot_spec(
+            estate.territory_type_id as u16,
+            estate.division as u8,
+            estate.plot_index as u8,
+        )
+    } else {
+        None
+    };
+
+    struct ResolvedLiveMove {
+        flat_slot: u16,
+        item_id_hint: Option<u32>,
+        world_x: f32,
+        world_y: f32,
+        world_z: f32,
+        world_rot: f32,
+        local_x: f32,
+        local_y: f32,
+        local_z: f32,
+        local_rot: f32,
+    }
+
+    let mut resolved = Vec::with_capacity(req.moves.len());
+    let mut live_moves = Vec::with_capacity(req.moves.len());
+
+    for entry in &req.moves {
+        let in_pos = Position(glam::Vec3A::new(entry.pos_x, entry.pos_y, entry.pos_z));
+        let in_rot = wrap_angle_radians(entry.rotation);
+
+        let ((world_pos, world_rot), (local_pos, local_rot)) = if !req.indoors
+            && let Some(spec) = plot_origin
+        {
+            if req.plot_local {
+                (spec.local_to_world(in_pos, in_rot), (in_pos, in_rot))
+            } else {
+                ((in_pos, in_rot), spec.world_to_local(in_pos, in_rot))
+            }
+        } else {
+            ((in_pos, in_rot), (in_pos, in_rot))
+        };
+
+        live_moves.push(LiveFurnitureMove {
+            flat_slot: entry.flat_slot,
+            pos_x: world_pos.0.x,
+            pos_y: world_pos.0.y,
+            pos_z: world_pos.0.z,
+            rotation: world_rot,
+        });
+        resolved.push(ResolvedLiveMove {
+            flat_slot: entry.flat_slot,
+            item_id_hint: entry.item_id,
+            world_x: world_pos.0.x,
+            world_y: world_pos.0.y,
+            world_z: world_pos.0.z,
+            world_rot,
+            local_x: local_pos.0.x,
+            local_y: local_pos.0.y,
+            local_z: local_pos.0.z,
+            local_rot,
+        });
+    }
+
+    let mut delta_items = Vec::new();
+    if req.commit_db {
+        use diesel::Connection;
+
+        let mut db = hub.database.lock();
+        let conn = db.connection_mut();
+        let existing_rows = list_placed_furniture_in_scope(conn, land_ident, req.indoors)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let mut slot_meta = std::collections::HashMap::with_capacity(existing_rows.len());
+        for row in &existing_rows {
+            if let Some(ctype) = container_from_i32(row.container_type)
+                && let Some(flat) = flat_slot_for_placed_container(ctype, row.slot.max(0) as u16)
+            {
+                slot_meta.insert(
+                    flat,
+                    (row.item_id.max(0) as u32, row.catalog_id.max(0) as u16),
+                );
+            }
+        }
+
+        conn.transaction::<_, diesel::result::Error, _>(|conn| {
+            for mv in &resolved {
+                if let Some((ctype, slot_in_page)) =
+                    placed_container_for_flat_slot(req.indoors, mv.flat_slot)
+                {
+                    update_furniture_position(
+                        conn,
+                        land_ident,
+                        ctype as i32,
+                        slot_in_page as i32,
+                        mv.world_x,
+                        mv.world_y,
+                        mv.world_z,
+                        mv.world_rot,
+                    )?;
+                }
+            }
+            Ok(())
+        })
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        for mv in &resolved {
+            let (row_item, row_cat) = slot_meta.get(&mv.flat_slot).copied().unwrap_or((0, 0));
+            delta_items.push(HousingBridgeMoveItem {
+                flat_slot: mv.flat_slot,
+                item_id: mv.item_id_hint.unwrap_or(row_item),
+                catalog_id: row_cat,
+                pos_x: mv.world_x,
+                pos_y: mv.world_y,
+                pos_z: mv.world_z,
+                rotation: mv.world_rot,
+                local_x: mv.local_x,
+                local_y: mv.local_y,
+                local_z: mv.local_z,
+                local_rotation: mv.local_rot,
+            });
+        }
+    }
+
+    let applied_count = live_moves.len();
+    hub.send_to_server(ToServer::HousingSim(
+        HousingSimToServer::BroadcastEstateLiveMoves {
+            land_ident,
+            indoors: req.indoors,
+            moves: live_moves,
+        },
+    ))
+    .await;
+
+    let rev = if req.commit_db {
+        let rev = hub.next_revision();
+        hub.emit_event(
+            HousingSseEvent::new(
+                "furniture_moved",
+                Some(land_ident),
+                format!("실시간 가구 이동 ({applied_count}개)"),
+            )
+            .with_source(req.source)
+            .with_revision(rev)
+            .with_delta(HousingBridgeDelta::FurnitureMoved {
+                indoors: req.indoors,
+                moves: delta_items,
+            }),
+        );
+        rev
+    } else {
+        hub.next_revision()
+    };
+
+    Ok(Json(LiveMoveResponse {
+        ok: true,
+        land_ident,
+        revision: rev,
+        applied_count,
+    }))
 }
 
 #[cfg(test)]
@@ -1489,5 +1907,233 @@ mod tests {
                 ref kind,
             }) if kind == "indoor"
         ));
+    }
+
+    #[tokio::test]
+    async fn live_move_streams_without_db_churn_and_commits_when_requested() {
+        let (hub, mut rx) = test_hub();
+        let mut event_rx = hub.event_tx.subscribe();
+
+        let ensured = ensure_estate_handler(
+            State(hub.clone()),
+            Json(EnsureEstateRequest {
+                territory_type_id: 340,
+                world_id: 79,
+                ward_index: 0,
+                division: 0,
+                plot_index: Some(0),
+                plot_size: Some(2),
+                owner_content_id: 42,
+                owner_name: "Tester".to_string(),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        let layout = ReMakePlaceLayout {
+            house_size: "Large".to_string(),
+            interior_scale: 100.0,
+            exterior_scale: 100.0,
+            interior_furniture: vec![ReMakePlaceFurniture {
+                name: "Alpine Chair".to_string(),
+                item_id: 21873,
+                transform: ReMakePlaceTransform {
+                    location: [100.0, 200.0, 50.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+                ..Default::default()
+            }],
+            exterior_furniture: vec![ReMakePlaceFurniture {
+                name: "Yard Bench".to_string(),
+                item_id: 12000,
+                transform: ReMakePlaceTransform {
+                    location: [400.0, 200.0, 100.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let applied = apply_preset_handler(
+            State(hub.clone()),
+            Path(ensured.land_ident),
+            Json(ApplyPresetRequest {
+                layout: Some(layout),
+                scope: PresetScope::All,
+                reload_mode: ReloadMode::LivePackets,
+                source: Some("rmp".to_string()),
+                skip_snapshot: true,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(
+            applied.snapshot_id.is_none(),
+            "skip_snapshot=true should skip snapshot"
+        );
+        let _ = rx.try_recv().unwrap();
+
+        // Drain initial SSE events up to preset_applied
+        let mut saw_rmp_preset_sse = false;
+        while let Ok(evt) = event_rx.try_recv() {
+            if evt.kind == "preset_applied" {
+                assert_eq!(evt.source.as_deref(), Some("rmp"));
+                assert!(evt.revision.is_some());
+                saw_rmp_preset_sse = true;
+            }
+        }
+        assert!(saw_rmp_preset_sse);
+
+        // 1. Live drag frame (commit_db=false): broadcasts live packets without mutating SQLite or SSE.
+        let drag_res = live_move_handler(
+            State(hub.clone()),
+            Path(ensured.land_ident),
+            Json(LiveMoveRequest {
+                source: Some("rmp".to_string()),
+                indoors: true,
+                plot_local: true,
+                commit_db: false,
+                moves: vec![LiveMoveEntryRequest {
+                    flat_slot: 0,
+                    item_id: Some(21873),
+                    pos_x: 3.5,
+                    pos_y: 1.25,
+                    pos_z: -2.0,
+                    rotation: 0.75,
+                }],
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(drag_res.ok);
+        assert_eq!(drag_res.applied_count, 1);
+        assert!(
+            event_rx.try_recv().is_err(),
+            "drag frame should not emit SSE"
+        );
+
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ToServer::HousingSim(HousingSimToServer::BroadcastEstateLiveMoves {
+                land_ident,
+                indoors: true,
+                ref moves,
+            }) if land_ident == ensured.land_ident && moves.len() == 1 && (moves[0].pos_x - 3.5).abs() < 1e-4
+        ));
+
+        let detail_before_commit = get_estate_handler(State(hub.clone()), Path(ensured.land_ident))
+            .await
+            .unwrap()
+            .0;
+        let pre_commit_indoor = detail_before_commit
+            .furniture
+            .iter()
+            .find(|r| r.item_id == 21873)
+            .unwrap();
+        assert!((pre_commit_indoor.pos_x - 1.0).abs() < 1e-4);
+
+        // 2. Final commit move (commit_db=true): updates DB and emits structured SSE delta.
+        let commit_res = live_move_handler(
+            State(hub.clone()),
+            Path(ensured.land_ident),
+            Json(LiveMoveRequest {
+                source: Some("rmp".to_string()),
+                indoors: true,
+                plot_local: true,
+                commit_db: true,
+                moves: vec![LiveMoveEntryRequest {
+                    flat_slot: 0,
+                    item_id: Some(21873),
+                    pos_x: 3.5,
+                    pos_y: 1.25,
+                    pos_z: -2.0,
+                    rotation: 0.75,
+                }],
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(commit_res.revision, drag_res.revision + 1);
+
+        let evt = event_rx.try_recv().unwrap();
+        assert_eq!(evt.kind, "furniture_moved");
+        assert_eq!(evt.source.as_deref(), Some("rmp"));
+        assert_eq!(evt.revision, Some(commit_res.revision));
+        assert!(matches!(
+            evt.delta,
+            Some(HousingBridgeDelta::FurnitureMoved { indoors: true, ref moves }) if moves.len() == 1 && (moves[0].local_x - 3.5).abs() < 1e-4
+        ));
+
+        let detail_after_commit = get_estate_handler(State(hub.clone()), Path(ensured.land_ident))
+            .await
+            .unwrap()
+            .0;
+        let committed_indoor = detail_after_commit
+            .furniture
+            .iter()
+            .find(|r| r.item_id == 21873)
+            .unwrap();
+        assert!((committed_indoor.pos_x - 3.5).abs() < 1e-4);
+
+        // 3. Outdoor plot_local live move transforms local -> world for DB and broadcasts,
+        //    and bridge_snapshot returns exact UE cm local coordinates!
+        let ext_commit = live_move_handler(
+            State(hub.clone()),
+            Path(ensured.land_ident),
+            Json(LiveMoveRequest {
+                source: Some("rmp".to_string()),
+                indoors: false,
+                plot_local: true,
+                commit_db: true,
+                moves: vec![LiveMoveEntryRequest {
+                    flat_slot: 0,
+                    item_id: Some(12000),
+                    pos_x: 2.25,
+                    pos_y: 0.75,
+                    pos_z: -1.5,
+                    rotation: 0.4,
+                }],
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(ext_commit.ok);
+        let _ = rx.try_recv().unwrap();
+        let ext_evt = event_rx.try_recv().unwrap();
+        assert!(matches!(
+            ext_evt.delta,
+            Some(HousingBridgeDelta::FurnitureMoved { indoors: false, ref moves })
+                if moves.len() == 1
+                    && (moves[0].local_x - 2.25).abs() < 1e-3
+                    && (moves[0].pos_x - 2.25).abs() > 5.0
+        ));
+
+        let snap = bridge_snapshot_handler(State(hub), Path(ensured.land_ident))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(snap.indoor.len(), 1);
+        assert_eq!(snap.indoor[0].flat_slot, 0);
+        assert!((snap.indoor[0].ue_loc[0] - 350.0).abs() < 0.1);
+        assert!((snap.indoor[0].ue_loc[1] - (-200.0)).abs() < 0.1);
+        assert!((snap.indoor[0].ue_loc[2] - 125.0).abs() < 0.1);
+        assert!((snap.indoor[0].ue_yaw_deg - (-0.75f32.to_degrees())).abs() < 0.1);
+
+        assert_eq!(snap.outdoor.len(), 1);
+        assert_eq!(snap.outdoor[0].flat_slot, 0);
+        assert!((snap.outdoor[0].ue_loc[0] - 225.0).abs() < 0.5);
+        assert!((snap.outdoor[0].ue_loc[1] - (-150.0)).abs() < 0.5);
+        assert!((snap.outdoor[0].ue_loc[2] - 75.0).abs() < 0.5);
+        assert!((snap.outdoor[0].ue_yaw_deg - (-0.4f32.to_degrees())).abs() < 0.5);
     }
 }

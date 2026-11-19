@@ -1346,6 +1346,26 @@ pub async fn execute_housing_reload(
     preserve_player_pos: bool,
     force_enter: bool,
 ) {
+    execute_housing_reload_with_source(
+        connection,
+        land_ident,
+        mode,
+        preserve_player_pos,
+        force_enter,
+        None,
+    )
+    .await;
+}
+
+/// Executes live reload after DB mutations while propagating optional `source` onto SSE live-diff notifications.
+pub async fn execute_housing_reload_with_source(
+    connection: &mut ZoneConnection,
+    land_ident: Option<i32>,
+    mode: ReloadMode,
+    preserve_player_pos: bool,
+    force_enter: bool,
+    source: Option<&str>,
+) {
     if mode == ReloadMode::None {
         return;
     }
@@ -1427,12 +1447,14 @@ pub async fn execute_housing_reload(
                             "Skipping live indoor refresh because state matches client snapshot"
                         );
                         if let Some(ref hub) = connection.housing_hub {
-                            hub.emit_event(super::session::HousingSseEvent {
-                                kind: "live_diff_applied".to_string(),
-                                land_ident: Some(estate.land_ident),
-                                message: "변경 사항 없음 (무로딩 유지)".to_string(),
-                                session: None,
-                            });
+                            hub.emit_event(
+                                super::session::HousingSseEvent::new(
+                                    "live_diff_applied",
+                                    Some(estate.land_ident),
+                                    "변경 사항 없음 (무로딩 유지)",
+                                )
+                                .with_source(source.map(ToString::to_string)),
+                            );
                         }
                         return;
                     }
@@ -1443,6 +1465,7 @@ pub async fn execute_housing_reload(
                         &diff,
                         next_state,
                         &placed_rows,
+                        source,
                     )
                     .await;
                     return;
@@ -1718,6 +1741,7 @@ pub async fn push_indoor_live_diff(
     diff: &IndoorLiveDiff,
     next_state: SyncedIndoorState,
     placed_rows: &[HousingFurnitureRow],
+    source: Option<&str>,
 ) {
     let mut row_by_slot: HashMap<(i32, i32), &HousingFurnitureRow> =
         HashMap::with_capacity(placed_rows.len());
@@ -2009,12 +2033,14 @@ pub async fn push_indoor_live_diff(
     );
 
     if let Some(ref hub) = connection.housing_hub {
-        hub.emit_event(super::session::HousingSseEvent {
-            kind: "live_diff_applied".to_string(),
-            land_ident: Some(estate.land_ident),
-            message: format!("무로딩 실시간 반영: {summary_ko}"),
-            session: None,
-        });
+        hub.emit_event(
+            super::session::HousingSseEvent::new(
+                "live_diff_applied",
+                Some(estate.land_ident),
+                format!("무로딩 실시간 반영: {summary_ko}"),
+            )
+            .with_source(source.map(ToString::to_string)),
+        );
     }
 }
 
@@ -2073,6 +2099,28 @@ pub fn apply_preset_layout_with_catalog(
     actor_content_id: u64,
     snapshot_label: &str,
 ) -> Result<(super::remake_place::PreparedReMakePlaceApply, Option<i32>), String> {
+    apply_preset_layout_with_options(
+        database,
+        catalog,
+        land_ident,
+        layout,
+        scope,
+        actor_content_id,
+        snapshot_label,
+        false,
+    )
+}
+
+pub fn apply_preset_layout_with_options(
+    database: &parking_lot::Mutex<WorldDatabase>,
+    catalog: &HousingCatalog,
+    land_ident: i32,
+    layout: &super::remake_place::ReMakePlaceLayout,
+    scope: PresetScope,
+    actor_content_id: u64,
+    snapshot_label: &str,
+    skip_snapshot: bool,
+) -> Result<(super::remake_place::PreparedReMakePlaceApply, Option<i32>), String> {
     use diesel::Connection;
 
     enum ApplyTxError {
@@ -2090,7 +2138,11 @@ pub fn apply_preset_layout_with_catalog(
     conn.transaction::<_, ApplyTxError, _>(|conn| {
         let estate = estate_by_land_ident(conn, land_ident)?.ok_or(ApplyTxError::NotFound)?;
 
-        let snap_id = super::db::create_snapshot(conn, land_ident, snapshot_label).ok();
+        let snap_id = if skip_snapshot {
+            None
+        } else {
+            super::db::create_snapshot(conn, land_ident, snapshot_label).ok()
+        };
         let existing_indoor = if scope.includes_interior() {
             list_placed_furniture_in_scope(conn, land_ident, true)?
         } else {
@@ -2283,12 +2335,7 @@ pub async fn send_housing_placard_info(
     let _ = placed_container_for_flat_slot;
     let _ = indoor_slot_capacity;
     let _ = nearest_plot_to_position;
-    let _ = HousingSseEvent {
-        kind: String::new(),
-        land_ident: None,
-        message: String::new(),
-        session: None,
-    };
+    let _ = HousingSseEvent::new("", None, "");
 }
 
 /// Sends real apartment residents list from `housing_estates`.

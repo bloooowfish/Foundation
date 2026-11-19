@@ -13,6 +13,7 @@ pub mod remake_place;
 pub mod session;
 
 pub use session::{
-    ActiveEstateSelection, HousingSimFromServer, HousingSimHub, HousingSimSession,
-    HousingSimToServer, HousingSseEvent, OnlineSessionSnapshot, ReloadMode, WardContext,
+    ActiveEstateSelection, HousingBridgeDelta, HousingBridgeMoveItem, HousingSimFromServer,
+    HousingSimHub, HousingSimSession, HousingSimToServer, HousingSseEvent, LiveFurnitureMove,
+    OnlineSessionSnapshot, ReloadMode, WardContext,
 };

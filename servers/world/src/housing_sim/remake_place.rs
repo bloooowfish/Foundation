@@ -52,6 +52,8 @@ impl PresetScope {
 #[serde(rename_all = "camelCase", default)]
 pub struct ReMakePlaceLayout {
     pub player_transform: ReMakePlaceTransform,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light_level: Option<f32>,
     pub house_size: String,
     pub interior_scale: f32,
     pub interior_fixture: Vec<ReMakePlaceFixture>,
@@ -66,6 +68,7 @@ impl Default for ReMakePlaceLayout {
     fn default() -> Self {
         Self {
             player_transform: ReMakePlaceTransform::default(),
+            light_level: None,
             house_size: String::new(),
             interior_scale: 1.0,
             interior_fixture: Vec::new(),
@@ -530,6 +533,11 @@ pub fn prepare_apply_layout_with_existing(
             stored_interior.grand_chandelier = 0;
         }
         updated_estate.interior_json = stored_interior.to_json();
+        if let Some(ll) = layout.light_level
+            && ll.is_finite()
+        {
+            updated_estate.light_level = (ll.clamp(0.0, 1.0) * 5.0).round() as i32;
+        }
     }
 
     let mut stored_exterior = StoredHouseExterior::from_json(&estate.exterior_json);
@@ -889,6 +897,7 @@ pub fn export_estate_to_layout(
     };
 
     if scope.includes_interior() {
+        layout.light_level = Some((estate.light_level.clamp(0, 5) as f32) / 5.0);
         let interior = StoredHouseInterior::from_json(&estate.interior_json);
         let floor_fixtures = [
             ("Ground Floor", "Wall", Some(73u8), interior.ground_walls),
@@ -1681,6 +1690,51 @@ mod tests {
         assert_eq!(parse_hex_rgb("#EFEFEFFF"), Some([0xEF, 0xEF, 0xEF]));
         assert_eq!(parse_hex_rgb("빨간색"), None);
         assert_eq!(parse_hex_rgb("#한글색상값"), None);
+    }
+
+    #[test]
+    fn remake_place_light_level_roundtrip_scales_cleanly() {
+        let mut world_db = WorldDatabase::new_in_memory();
+        let conn = world_db.connection_mut();
+        let catalog = HousingCatalog::mock_for_tests();
+
+        let estate = crate::housing_sim::db::ensure_estate(
+            conn,
+            &EnsureEstateSpec {
+                territory_type_id: 340,
+                world_id: 79,
+                ward_index: 0,
+                division: 0,
+                plot_index: 0,
+                room_number: 0,
+                is_apartment: false,
+                plot_size: PlotSize::Small,
+                is_fc: false,
+                owner_content_id: 42,
+                owner_name: "Tester".to_string(),
+                estate_name: "LightHouse".to_string(),
+                exterior_json: StoredHouseExterior::default().to_json(),
+                interior_json: StoredHouseInterior::default().to_json(),
+            },
+        )
+        .unwrap();
+
+        let layout = ReMakePlaceLayout {
+            house_size: "Small".to_string(),
+            light_level: Some(0.6),
+            ..Default::default()
+        };
+
+        let prepared = prepare_apply_layout(&estate, &layout, &catalog, PresetScope::Interior, 42);
+        assert_eq!(prepared.updated_estate.light_level, 3);
+
+        let exported = export_estate_to_layout(
+            &prepared.updated_estate,
+            &[],
+            &catalog,
+            PresetScope::Interior,
+        );
+        assert!((exported.light_level.unwrap() - 0.6).abs() < 1e-4);
     }
 
     #[test]
