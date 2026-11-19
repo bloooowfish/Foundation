@@ -315,8 +315,12 @@ async fn ensure_estate_handler(
         kind: "estate_ensured".to_string(),
         land_ident: Some(row.land_ident),
         message: format!(
-            "Ensured '{}' (land_ident={})",
-            row.estate_name, row.land_ident
+            "하우스 준비 완료: {}",
+            if row.estate_name.is_empty() {
+                "테스트 하우스"
+            } else {
+                &row.estate_name
+            }
         ),
         session: None,
     });
@@ -420,8 +424,12 @@ async fn switch_session_handler(
         kind: "session_switched".to_string(),
         land_ident: Some(estate.land_ident),
         message: format!(
-            "Switched active estate to '{}' (land_ident={}, territory={})",
-            estate.estate_name, estate.land_ident, estate.territory_type_id
+            "활성 하우스 전환: {}",
+            if estate.estate_name.is_empty() {
+                "테스트 하우스"
+            } else {
+                &estate.estate_name
+            }
         ),
         session: None,
     });
@@ -482,9 +490,9 @@ async fn unlock_all_session_handler(
         kind: "session_unlocked".to_string(),
         land_ident: None,
         message: if names.is_empty() {
-            "No character records matched unlock request.".to_string()
+            "해금 대상 캐릭터가 없습니다.".to_string()
         } else {
-            format!("Unlocked full access for: {}", names.join(", "))
+            format!("전체 해금 완료: {}", names.join(", "))
         },
         session: None,
     });
@@ -543,7 +551,7 @@ async fn give_kit_handler(
     hub.emit_event(HousingSseEvent {
         kind: "kit_granted".to_string(),
         land_ident: None,
-        message: format!("Dispatched '{normalized}' sample furniture kit."),
+        message: format!("샘플 가구 키트 전송 완료 ({normalized})"),
         session: None,
     });
 
@@ -678,7 +686,7 @@ async fn patch_estate_handler(
     hub.emit_event(HousingSseEvent {
         kind: "estate_updated".to_string(),
         land_ident: Some(land_ident),
-        message: format!("Updated estate {land_ident}"),
+        message: "하우스 설정이 업데이트되었습니다.".to_string(),
         session: None,
     });
     if mode != ReloadMode::None {
@@ -959,13 +967,12 @@ async fn apply_preset_handler(
         kind: "preset_applied".to_string(),
         land_ident: Some(land_ident),
         message: format!(
-            "Applied preset '{}' (indoor={}/{}, outdoor={}/{}, reload={:?})",
+            "프리셋 적용 완료: '{}' (실내 {}/{}, 정원 {}/{})",
             label,
             prepared.preview.interior_resolved_count,
             prepared.preview.interior_input_count,
             prepared.preview.exterior_resolved_count,
             prepared.preview.exterior_input_count,
-            effective_reload,
         ),
         session: None,
     });
@@ -1035,7 +1042,7 @@ async fn restore_snapshot_handler(
     hub.emit_event(HousingSseEvent {
         kind: "snapshot_restored".to_string(),
         land_ident: Some(land_ident),
-        message: format!("Restored snapshot #{}", summary.id),
+        message: format!("스냅샷 #{} 상태로 복원했습니다.", summary.id),
         session: None,
     });
     if req.reload_mode != ReloadMode::None {
@@ -1080,7 +1087,7 @@ async fn undo_estate_handler(
     hub.emit_event(HousingSseEvent {
         kind: "snapshot_restored".to_string(),
         land_ident: Some(land_ident),
-        message: format!("Undo restored snapshot #{snap_id}"),
+        message: format!("실행 취소: 스냅샷 #{snap_id} 상태로 복원했습니다."),
         session: None,
     });
     if req.reload_mode != ReloadMode::None {

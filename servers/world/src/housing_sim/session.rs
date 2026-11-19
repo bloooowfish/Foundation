@@ -59,6 +59,15 @@ pub struct LoginWardSpawn {
     pub is_apartment_exit: bool,
 }
 
+/// Pending second hop for a same-territory indoor reload bounced through the outdoor ward.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingSameZoneIndoorReentry {
+    pub land_ident: i32,
+    pub preserve_pos: Option<Position>,
+    pub preserve_rot: Option<f32>,
+    pub ready_at: Option<tokio::time::Instant>,
+}
+
 /// Per-connection runtime state stored in `ZoneConnection.housing_sim`.
 #[derive(Debug, Default)]
 pub struct HousingSimSession {
@@ -73,6 +82,7 @@ pub struct HousingSimSession {
     pub pending_placard_location: Option<(u8, u8)>,
     pub last_entrance_plot: Option<(u8, u8)>,
     pub login_ward_spawn: Option<LoginWardSpawn>,
+    pub pending_same_zone_indoor_reentry: Option<PendingSameZoneIndoorReentry>,
     pub is_owner_authorized: bool,
 }
 
@@ -84,6 +94,11 @@ impl HousingSimSession {
         self.pending_indoor_finish_loading_since = None;
         self.pending_indoor_overlay_sync = false;
         self.pending_remodel_container = None;
+    }
+
+    /// Cancels any pending same-territory indoor re-entry bounce across explicit switches/exits.
+    pub fn clear_pending_indoor_reentry(&mut self) {
+        self.pending_same_zone_indoor_reentry = None;
     }
 }
 
@@ -375,6 +390,12 @@ mod tests {
             pending_indoor_finish_loading_since: Some(tokio::time::Instant::now()),
             pending_indoor_overlay_sync: true,
             pending_remodel_container: Some(ContainerType::HousingInteriorPlacedItems1),
+            pending_same_zone_indoor_reentry: Some(PendingSameZoneIndoorReentry {
+                land_ident: 34000003,
+                preserve_pos: None,
+                preserve_rot: None,
+                ready_at: None,
+            }),
             ..Default::default()
         };
 
@@ -385,5 +406,9 @@ mod tests {
         assert!(session.pending_indoor_finish_loading_since.is_none());
         assert!(!session.pending_indoor_overlay_sync);
         assert!(session.pending_remodel_container.is_none());
+        assert!(session.pending_same_zone_indoor_reentry.is_some());
+
+        session.clear_pending_indoor_reentry();
+        assert!(session.pending_same_zone_indoor_reentry.is_none());
     }
 }

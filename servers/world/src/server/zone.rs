@@ -881,17 +881,15 @@ pub(crate) fn begin_change_zone<'a>(
 
     if let Some(current_instance) = data.find_actor_instance_mut(actor_id) {
         // This is to prevent actors from disappearing when warping within the same zone.
-        if current_instance.zone.id != territory_type_id {
+        if current_instance.zone.id != territory_type_id
+            || query.is_some_and(|target_query| {
+                matches!(target_query, InstanceQuery::House { .. })
+                    || current_instance.query != target_query
+            })
+        {
             needs_init_zone = true;
         }
     } else {
-        needs_init_zone = true;
-    }
-
-    // The ward is only populated when ToServer::ChangeZone is sent, and is generally needed for all housing I guess
-    if matches!(query, Some(InstanceQuery::House { .. }))
-        || matches!(query, Some(InstanceQuery::Ward { .. }))
-    {
         needs_init_zone = true;
     }
 

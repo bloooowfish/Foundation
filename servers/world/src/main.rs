@@ -4813,6 +4813,11 @@ async fn client_loop(
             .housing_sim
             .pending_indoor_finish_loading_since
             .map(|since| since + std::time::Duration::from_millis(1500));
+        let reentry_deadline = connection
+            .housing_sim
+            .pending_same_zone_indoor_reentry
+            .as_ref()
+            .and_then(|r| r.ready_at);
 
         tokio::select! {
             biased; // client data should always be prioritized
@@ -4845,6 +4850,13 @@ async fn client_loop(
                 }
             }, if deferred_deadline.is_some() => {
                 housing_sim::flows::flush_deferred_indoor_tail_on_timeout(&mut connection).await;
+            }
+            _ = async {
+                if let Some(deadline) = reentry_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                }
+            }, if reentry_deadline.is_some() => {
+                housing_sim::flows::complete_pending_same_zone_indoor_reentry(&mut connection).await;
             }
         }
     }

@@ -985,15 +985,19 @@ async fn flush_deferred_indoor_tail(connection: &mut ZoneConnection, reason: &st
     true
 }
 
-/// Delivers deferred `FurnitureList` chunks (`3..`) when `FinishEstateRemodel { mode: 255 }` arrives, then releases deferred `FinishLoading`.
+/// Delivers deferred `FurnitureList` chunks (`3..`) when `FinishEstateRemodel` arrives during indoor zoning, then releases deferred `FinishLoading`.
 pub async fn complete_deferred_indoor_tail_on_remodel(
     connection: &mut ZoneConnection,
     mode: u32,
 ) -> bool {
-    if mode != 255 {
+    let reason = if mode == 255 {
+        "finish_estate_remodel_255"
+    } else if mode == 0 && connection.housing_sim.pending_remodel_container.is_none() {
+        "finish_estate_remodel_0"
+    } else {
         return false;
-    }
-    flush_deferred_indoor_tail(connection, "finish_estate_remodel_255").await
+    };
+    flush_deferred_indoor_tail(connection, reason).await
 }
 
 /// Failsafe flush when a client holds deferred indoor furniture chunks past the timeout after `FinishLoading`.
@@ -1110,6 +1114,38 @@ pub async fn warp_into_estate_interior(
     preserve_rot: Option<f32>,
 ) {
     let target_zone = target_indoor_territory_for_estate(estate);
+    let current_zone_id = connection.player_data.volatile.zone_id as u16;
+    if current_zone_id == target_zone
+        && (is_house_interior_territory(current_zone_id) || is_apartment_territory(current_zone_id))
+    {
+        tracing::info!(
+            land_ident = estate.land_ident,
+            zone_id = current_zone_id,
+            transit_ward_zone_id = estate.territory_type_id,
+            "Same-territory indoor reload detected; bouncing via outdoor ward for clean client reload"
+        );
+        connection.housing_sim.active_estate = Some(build_selection_from_row(estate, true));
+        connection.housing_sim.pending_same_zone_indoor_reentry =
+            Some(super::session::PendingSameZoneIndoorReentry {
+                land_ident: estate.land_ident,
+                preserve_pos,
+                preserve_rot,
+                ready_at: None,
+            });
+        if estate.is_apartment {
+            warp_to_apartment_outdoor(
+                connection,
+                estate.territory_type_id as u16,
+                estate.ward_index as u8,
+                estate.division.clamp(0, 1) as u8,
+            )
+            .await;
+        } else {
+            warp_to_estate_outdoor(connection, estate, None, None).await;
+        }
+        return;
+    }
+
     let house_id = HouseId::from(estate.house_id as u64);
     connection.housing_sim.active_estate = Some(build_selection_from_row(estate, true));
     connection
@@ -1125,6 +1161,56 @@ pub async fn warp_into_estate_interior(
             },
         ))
         .await;
+}
+
+/// Completes the second hop of a bounced same-territory indoor reload once the transit outdoor ward finishes zoning.
+pub async fn complete_pending_same_zone_indoor_reentry(connection: &mut ZoneConnection) {
+    let Some(reentry) = connection
+        .housing_sim
+        .pending_same_zone_indoor_reentry
+        .take()
+    else {
+        return;
+    };
+
+    let estate = {
+        let mut db = connection.database.lock();
+        estate_by_land_ident(db.connection_mut(), reentry.land_ident)
+            .ok()
+            .flatten()
+    };
+    let Some(estate) = estate else {
+        tracing::warn!(
+            land_ident = reentry.land_ident,
+            "Pending same-territory indoor re-entry estate not found"
+        );
+        return;
+    };
+
+    let current_zone_id = connection.player_data.volatile.zone_id as u16;
+    let target_zone = target_indoor_territory_for_estate(&estate);
+    if current_zone_id == target_zone {
+        tracing::warn!(
+            land_ident = reentry.land_ident,
+            zone_id = current_zone_id,
+            "Aborting bounced indoor re-entry because player is still in the target indoor territory"
+        );
+        return;
+    }
+
+    tracing::info!(
+        land_ident = estate.land_ident,
+        from_zone_id = current_zone_id,
+        target_zone_id = target_zone,
+        "Executing bounced indoor re-entry from transit outdoor ward"
+    );
+    warp_into_estate_interior(
+        connection,
+        &estate,
+        reentry.preserve_pos,
+        reentry.preserve_rot,
+    )
+    .await;
 }
 
 /// Warps the player out to the Apartment Building entrance in `(territory_type_id, ward_index, division)`.

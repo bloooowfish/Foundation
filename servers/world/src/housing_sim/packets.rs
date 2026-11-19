@@ -234,6 +234,19 @@ async fn handle_client_trigger(
                     TerritoryIntendedUse::Town
                 };
             publish_session_snapshot(connection, intended_use);
+            if intended_use == TerritoryIntendedUse::HousingOutdoor
+                && let Some(ref mut reentry) =
+                    connection.housing_sim.pending_same_zone_indoor_reentry
+                && reentry.ready_at.is_none()
+            {
+                reentry.ready_at =
+                    Some(tokio::time::Instant::now() + std::time::Duration::from_millis(250));
+                tracing::info!(
+                    land_ident = reentry.land_ident,
+                    transit_zone_id = zone_id,
+                    "Transit outdoor FinishZoning received; scheduling indoor re-entry"
+                );
+            }
             false
         }
         ClientTriggerCommand::RequestHousingInventory { storeroom } => {
@@ -1958,9 +1971,34 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
             };
             publish_session_snapshot(connection, current_intended);
 
+            connection.housing_sim.clear_pending_indoor_reentry();
             if go_indoor {
                 warp_into_estate_interior(connection, &est, None, None).await;
             } else {
+                if !currently_indoors
+                    && !est.is_apartment
+                    && current_zone_id == est.territory_type_id as u16
+                    && connection
+                        .housing_sim
+                        .display_ward_context
+                        .is_some_and(|ctx| {
+                            ctx.ward_index == est.ward_index as u8
+                                && ctx.division != est.division.clamp(0, 1) as u8
+                        })
+                {
+                    connection.entering_subdivision = est.division != 0;
+                    super::flows::init_outdoor_ward(
+                        connection,
+                        current_zone_id,
+                        est.ward_index as u16,
+                    )
+                    .await;
+                    sync_current_overlays_for_connection(
+                        connection,
+                        TerritoryIntendedUse::HousingOutdoor,
+                    )
+                    .await;
+                }
                 warp_to_estate_outdoor(connection, &est, None, None).await;
             }
         }
