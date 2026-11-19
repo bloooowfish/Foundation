@@ -37,12 +37,20 @@ pub(crate) fn read_quantized_rotation(quantized: u16) -> f32 {
     quantized as f32 / max * (2.0 * pi) - pi
 }
 
-/// Converts a rotation (in degrees) to
+/// Converts a rotation (in radians) to quantized `u16`.
 pub(crate) fn write_quantized_rotation(quantized: &f32) -> u16 {
-    let max = u16::MAX as f32;
     let pi = std::f32::consts::PI;
+    let tau = std::f32::consts::TAU;
+    let max = u16::MAX as f32;
+    let normalized = if !quantized.is_finite() {
+        0.0
+    } else if (-pi..=pi).contains(quantized) {
+        *quantized
+    } else {
+        (quantized + pi).rem_euclid(tau) - pi
+    };
 
-    (((quantized + pi) / (2.0 * pi)) * max) as u16
+    (((normalized + pi) / tau) * max).round().clamp(0.0, max) as u16
 }
 
 pub(crate) fn read_packed_float(packed: u16) -> f32 {

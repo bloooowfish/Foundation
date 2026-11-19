@@ -219,19 +219,13 @@ impl Inventory {
         storage_id: ContainerType,
         storage_index: u16,
     ) -> Option<&mut Item> {
-        if let Some(container) = self.get_container_mut(&storage_id) {
-            return Some(container.get_slot_mut(storage_index));
-        }
-
-        None
+        self.get_container_mut(&storage_id)
+            .and_then(|container| container.try_get_slot_mut(storage_index))
     }
 
     pub fn get_item(&self, storage_id: ContainerType, storage_index: u16) -> Option<Item> {
-        if let Some(container) = self.get_container(storage_id) {
-            return Some(*container.get_slot(storage_index));
-        }
-
-        None
+        self.get_container(storage_id)
+            .and_then(|container| container.try_get_slot(storage_index).copied())
     }
 
     pub fn process_action(&mut self, action: &ItemOperation) {
@@ -877,19 +871,13 @@ impl HousingInventory {
         storage_id: ContainerType,
         storage_index: u16,
     ) -> Option<&mut Item> {
-        if let Some(container) = self.get_container_mut(&storage_id) {
-            return Some(container.get_slot_mut(storage_index));
-        }
-
-        None
+        self.get_container_mut(&storage_id)
+            .and_then(|container| container.try_get_slot_mut(storage_index))
     }
 
     pub fn get_item(&self, storage_id: ContainerType, storage_index: u16) -> Option<Item> {
-        if let Some(container) = self.get_container(storage_id) {
-            return Some(*container.get_slot(storage_index));
-        }
-
-        None
+        self.get_container(storage_id)
+            .and_then(|container| container.try_get_slot(storage_index).copied())
     }
 }
 
@@ -901,4 +889,30 @@ pub enum DesiredHousingInventoryPages {
     ExteriorStoreroom,
     Interior,
     InteriorStoreroom,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_of_range_slot_indices_return_none_without_panicking() {
+        let mut inv = Inventory::default();
+        assert!(inv.get_item(ContainerType::Inventory0, 35).is_none());
+        assert!(inv.get_item_mut(ContainerType::Inventory0, 999).is_none());
+        assert!(inv.get_item(ContainerType::Equipped, 50).is_none());
+        assert!(inv.get_item_mut(ContainerType::Equipped, 50).is_none());
+        assert!(inv.get_item(ContainerType::Crystals, 18).is_none());
+        assert!(inv.get_item_mut(ContainerType::Currency, 99).is_none());
+
+        let mut hinv = HousingInventory::default();
+        assert!(
+            hinv.get_item(ContainerType::HousingInteriorPlacedItems1, 50)
+                .is_none()
+        );
+        assert!(
+            hinv.get_item_mut(ContainerType::HousingExteriorPlacedItems, u16::MAX)
+                .is_none()
+        );
+    }
 }

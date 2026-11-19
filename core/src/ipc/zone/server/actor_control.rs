@@ -957,8 +957,8 @@ pub enum ActorControlCategory {
     /// Finalizes an empty indoor `FurnitureManager` without needing placeholder furniture slots.
     #[brw(magic = 1048u32)]
     HousingInteriorFinalizeEmpty {
-        house_id_low: u32,
         house_id_high: u32,
+        house_id_low: u32,
         estate_type: u32,
     },
 

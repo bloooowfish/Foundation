@@ -56,14 +56,13 @@ impl PlotLayoutSpec {
 }
 
 /// Normalizes an angle in radians into `[-PI, PI]`.
-pub fn wrap_angle_radians(mut angle: f32) -> f32 {
-    while angle > std::f32::consts::PI {
-        angle -= std::f32::consts::TAU;
+pub fn wrap_angle_radians(angle: f32) -> f32 {
+    if !angle.is_finite() {
+        return 0.0;
     }
-    while angle < -std::f32::consts::PI {
-        angle += std::f32::consts::TAU;
-    }
-    angle
+    let wrapped =
+        (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    if wrapped.is_finite() { wrapped } else { 0.0 }
 }
 
 /// Returns the plot layout metadata for `(territory_type_id, division, plot_index)`.
@@ -640,5 +639,14 @@ mod tests {
         let (apt_pos, apt_rot) = indoor_entry_transform(999);
         assert_eq!(apt_pos, Position(Vec3A::ZERO));
         assert!((-std::f32::consts::PI..=std::f32::consts::PI).contains(&apt_rot));
+    }
+
+    #[test]
+    fn wrap_angle_radians_handles_non_finite_and_huge_values() {
+        assert_eq!(wrap_angle_radians(f32::NAN), 0.0);
+        assert_eq!(wrap_angle_radians(f32::INFINITY), 0.0);
+        assert_eq!(wrap_angle_radians(f32::NEG_INFINITY), 0.0);
+        let huge = wrap_angle_radians(1.0e12);
+        assert!((-std::f32::consts::PI..=std::f32::consts::PI).contains(&huge));
     }
 }

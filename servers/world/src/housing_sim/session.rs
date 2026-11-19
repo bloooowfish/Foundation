@@ -63,6 +63,8 @@ pub struct LoginWardSpawn {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingSameZoneIndoorReentry {
     pub land_ident: i32,
+    pub expected_transit_zone_id: u16,
+    pub expected_transit_ward_index: u8,
     pub preserve_pos: Option<Position>,
     pub preserve_rot: Option<f32>,
     pub ready_at: Option<tokio::time::Instant>,
@@ -351,7 +353,16 @@ impl HousingSimHub {
     }
 
     pub fn list_online_sessions(&self) -> Vec<OnlineSessionSnapshot> {
-        self.sessions.read().values().cloned().collect()
+        let mut sessions: Vec<OnlineSessionSnapshot> =
+            self.sessions.read().values().cloned().collect();
+        sessions.sort_by(|a, b| {
+            (a.content_id, a.actor_id, &a.client_id_debug).cmp(&(
+                b.content_id,
+                b.actor_id,
+                &b.client_id_debug,
+            ))
+        });
+        sessions
     }
 
     pub fn emit_event(&self, evt: HousingSseEvent) {
@@ -394,6 +405,8 @@ mod tests {
             pending_remodel_container: Some(ContainerType::HousingInteriorPlacedItems1),
             pending_same_zone_indoor_reentry: Some(PendingSameZoneIndoorReentry {
                 land_ident: 34000003,
+                expected_transit_zone_id: 340,
+                expected_transit_ward_index: 0,
                 preserve_pos: None,
                 preserve_rot: None,
                 ready_at: None,

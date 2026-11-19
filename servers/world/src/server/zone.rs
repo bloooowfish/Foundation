@@ -1534,8 +1534,8 @@ pub fn handle_zone_messages(
             rotation,
             plot_index,
         ) => {
-            let mut network = network.lock();
             let data = data.lock();
+            let mut network = network.lock();
 
             let Some(instance) = data.find_actor_instance(*from_actor_id) else {
                 return true;
@@ -1570,8 +1570,8 @@ pub fn handle_zone_messages(
             rotation,
             indoors,
         ) => {
-            let mut network = network.lock();
             let data = data.lock();
+            let mut network = network.lock();
 
             let Some(instance) = data.find_actor_instance(*from_actor_id) else {
                 return true;
@@ -1613,8 +1613,8 @@ pub fn handle_zone_messages(
             true
         }
         ToServer::ChangeWeather(from_actor_id, weather_id) => {
-            let mut network = network.lock();
             let mut data = data.lock();
+            let mut network = network.lock();
 
             let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
                 return true;

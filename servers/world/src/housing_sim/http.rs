@@ -16,13 +16,12 @@ use tower_http::cors::CorsLayer;
 
 use crate::common::ToServer;
 
-use super::containers::is_placed_furniture_container;
 use super::db::{
     EnsureEstateSpec, HousingEstateRow, HousingFurnitureRow, MAX_ESTATE_GREETING_BYTES,
-    MAX_ESTATE_NAME_BYTES, SnapshotSummary, clamp_utf8, create_snapshot, delete_furniture_slot,
-    ensure_estate, estate_by_land_ident, list_all_estates, list_furniture_for_estate,
-    list_placed_furniture_in_scope, list_snapshots, restore_latest_snapshot, restore_snapshot,
-    save_estate,
+    MAX_ESTATE_NAME_BYTES, SnapshotSummary, clamp_utf8, create_snapshot, ensure_estate,
+    estate_by_land_ident, list_all_estates, list_furniture_for_estate,
+    list_placed_furniture_in_scope, list_snapshots, reset_estate_scope, restore_latest_snapshot,
+    restore_snapshot, save_estate,
 };
 use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
 use super::flows::{
@@ -30,7 +29,8 @@ use super::flows::{
     unlock_characters_in_database,
 };
 use super::gamedata_ext::{
-    display_name_for_renovation, normalize_district_style_name, renovation_row_for_style_and_size,
+    default_renovation_row_for_district_and_size, display_name_for_renovation,
+    normalize_district_style_name, renovation_row_for_style_and_size,
 };
 use super::plots::{
     canonical_plot_for_district_and_size, default_district_for_zone, parse_district_territory,
@@ -39,7 +39,7 @@ use super::plots::{
 use super::remake_place::{
     PresetFileSummary, PresetScope, ReMakePlaceLayout, ReMakePlacePreviewReport,
     export_estate_to_layout, parse_layout_bytes, prepare_apply_layout, read_layout_file,
-    resolve_safe_preset_path, scan_preset_directory,
+    resolve_safe_preset_path, sanitize_export_filename, scan_preset_directory,
 };
 use super::session::{
     HousingSimHub, HousingSimToServer, HousingSseEvent, OnlineSessionSnapshot, ReloadMode,
@@ -359,7 +359,11 @@ async fn switch_session_handler(
     Json(req): Json<SwitchSessionRequest>,
 ) -> ApiResult<SwitchSessionResponse> {
     let sessions = hub.list_online_sessions();
-    let active_session = sessions.first();
+    let active_session = if let Some(cid) = req.owner_content_id {
+        sessions.iter().find(|s| s.content_id == cid)
+    } else {
+        sessions.first()
+    };
 
     let estate = if let Some(ident) = req.land_ident {
         let mut db = hub.database.lock();
@@ -442,10 +446,15 @@ async fn switch_session_handler(
     ))
     .await;
 
+    let notified = sessions
+        .iter()
+        .filter(|s| target_content_id.is_none_or(|cid| cid == s.content_id))
+        .count();
+
     Ok(Json(SwitchSessionResponse {
         estate,
         target_indoor_territory,
-        online_sessions_notified: sessions.len(),
+        online_sessions_notified: notified,
     }))
 }
 
@@ -468,8 +477,9 @@ async fn unlock_all_session_handler(
 ) -> ApiResult<UnlockAllSessionResponse> {
     let req = body.map(|b| b.0).unwrap_or_default();
     let names = {
+        let gd_guard = hub.game_data.as_ref().map(|gd| gd.lock());
         let mut db = hub.database.lock();
-        unlock_characters_in_database(&mut db, hub.game_data.as_deref(), req.content_id)
+        unlock_characters_in_database(&mut db, gd_guard.as_deref(), req.content_id)
             .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
 
@@ -642,6 +652,7 @@ async fn patch_estate_handler(
                 est.flags &= !bit;
             }
         }
+        let prev_plot_size = est.plot_size;
         if let Some(sz) = req.plot_size {
             let clamped = sz.min(2) as i32;
             if est.plot_size != clamped {
@@ -652,24 +663,44 @@ async fn patch_estate_handler(
         if let Some(ext) = req.exterior {
             est.exterior_json = ext.to_json();
         }
+        let has_explicit_interior = req.interior.is_some();
         let mut int = req
             .interior
             .unwrap_or_else(|| StoredHouseInterior::from_json(&est.interior_json));
-        if let Some(row_id) = req.interior_renovation_row_id
-            && (1..=21).contains(&row_id)
-            && int.renovation_row_id != row_id
-        {
-            int.renovation_row_id = row_id;
-            needs_zone_reload = true;
-        } else if let Some(ref style) = req.interior_style
-            && let Some(canon) = normalize_district_style_name(style)
-        {
-            let size = PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8).unwrap_or_default();
-            if let Some(row_id) = renovation_row_for_style_and_size(canon, size)
+        if !est.is_apartment {
+            if let Some(row_id) = req.interior_renovation_row_id
+                && (1..=21).contains(&row_id)
                 && int.renovation_row_id != row_id
             {
                 int.renovation_row_id = row_id;
                 needs_zone_reload = true;
+            } else if let Some(ref style) = req.interior_style
+                && let Some(canon) = normalize_district_style_name(style)
+            {
+                let size = PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8).unwrap_or_default();
+                if let Some(row_id) = renovation_row_for_style_and_size(canon, size)
+                    && int.renovation_row_id != row_id
+                {
+                    int.renovation_row_id = row_id;
+                    needs_zone_reload = true;
+                }
+            } else if est.plot_size != prev_plot_size && !has_explicit_interior {
+                let new_size =
+                    PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8).unwrap_or_default();
+                let remapped_row = normalize_district_style_name(display_name_for_renovation(
+                    int.renovation_row_id,
+                ))
+                .and_then(|canon| renovation_row_for_style_and_size(canon, new_size))
+                .unwrap_or_else(|| {
+                    default_renovation_row_for_district_and_size(
+                        est.territory_type_id as u16,
+                        new_size,
+                    )
+                });
+                if int.renovation_row_id != remapped_row {
+                    int.renovation_row_id = remapped_row;
+                    needs_zone_reload = true;
+                }
             }
         }
         est.interior_json = int.to_json();
@@ -723,50 +754,53 @@ async fn reset_estate_handler(
     Json(req): Json<ResetEstateRequest>,
 ) -> ApiResult<ResetEstateResponse> {
     let catalog = hub.resolve_catalog();
+    enum ResetTxErr {
+        NotFound,
+        Diesel(diesel::result::Error),
+    }
+    impl From<diesel::result::Error> for ResetTxErr {
+        fn from(value: diesel::result::Error) -> Self {
+            Self::Diesel(value)
+        }
+    }
     let (snapshot_id, removed_count) = {
+        use diesel::Connection;
+
         let mut db = hub.database.lock();
         let conn = db.connection_mut();
-        let mut est = estate_by_land_ident(conn, land_ident)
-            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "Estate not found"))?;
-        let snap = create_snapshot(conn, land_ident, &format!("reset ({:?})", req.scope)).ok();
-        let size = PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8).unwrap_or_default();
-        if req.scope.includes_interior() {
-            est.interior_json = StoredHouseInterior::default_for_location(
-                &catalog,
-                est.territory_type_id as u16,
-                size,
-                est.is_apartment,
-            )
-            .to_json();
-        }
-        if req.scope.includes_exterior() && !est.is_apartment {
-            est.exterior_json = StoredHouseExterior::default_for_location(
-                &catalog,
-                est.territory_type_id as u16,
-                size,
-            )
-            .to_json();
-        }
-        save_estate(conn, &est)
-            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let all_rows = list_furniture_for_estate(conn, land_ident, None).unwrap_or_default();
-        let mut removed = 0usize;
-        for r in all_rows {
-            if let Some(ctype) = super::containers::container_from_i32(r.container_type)
-                && is_placed_furniture_container(ctype)
-            {
-                let is_indoor = super::containers::is_interior_placed_container(ctype);
-                if (is_indoor && req.scope.includes_interior())
-                    || (!is_indoor && req.scope.includes_exterior())
-                {
-                    let _ = delete_furniture_slot(conn, land_ident, r.container_type, r.slot);
-                    removed += 1;
-                }
+        conn.transaction::<_, ResetTxErr, _>(|conn| {
+            let mut est = estate_by_land_ident(conn, land_ident)?.ok_or(ResetTxErr::NotFound)?;
+            let snap = create_snapshot(conn, land_ident, &format!("reset ({:?})", req.scope)).ok();
+            let size = PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8).unwrap_or_default();
+            if req.scope.includes_interior() {
+                est.interior_json = StoredHouseInterior::default_for_location(
+                    &catalog,
+                    est.territory_type_id as u16,
+                    size,
+                    est.is_apartment,
+                )
+                .to_json();
             }
-        }
-        (snap, removed)
+            if req.scope.includes_exterior() && !est.is_apartment {
+                est.exterior_json = StoredHouseExterior::default_for_location(
+                    &catalog,
+                    est.territory_type_id as u16,
+                    size,
+                )
+                .to_json();
+            }
+            let removed = reset_estate_scope(
+                conn,
+                &est,
+                req.scope.includes_interior(),
+                req.scope.includes_exterior(),
+            )?;
+            Ok((snap, removed))
+        })
+        .map_err(|e| match e {
+            ResetTxErr::NotFound => api_err(StatusCode::NOT_FOUND, "Estate not found"),
+            ResetTxErr::Diesel(err) => api_err(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        })?
     };
 
     hub.emit_event(HousingSseEvent {
@@ -1140,21 +1174,7 @@ async fn export_remakeplace_post_handler(
         let raw_name = req
             .filename
             .unwrap_or_else(|| format!("estate_{land_ident}"));
-        let safe_stem: String = raw_name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let file = if safe_stem.ends_with(".json") {
-            safe_stem
-        } else {
-            format!("{safe_stem}.json")
-        };
+        let file = sanitize_export_filename(&raw_name);
         let path = dir.join(file);
         let text = serde_json::to_string_pretty(&layout)
             .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

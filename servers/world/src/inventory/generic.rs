@@ -30,6 +30,14 @@ impl<const N: usize> Storage for GenericStorage<N> {
     fn get_slot(&self, index: u16) -> &Item {
         self.slots.get(index as usize).unwrap()
     }
+
+    fn try_get_slot_mut(&mut self, index: u16) -> Option<&mut Item> {
+        self.slots.get_mut(index as usize)
+    }
+
+    fn try_get_slot(&self, index: u16) -> Option<&Item> {
+        self.slots.get(index as usize)
+    }
 }
 
 impl<const N: usize> GenericStorage<N> {

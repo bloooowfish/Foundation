@@ -576,12 +576,12 @@ pub fn build_apartment_entries(
             resident_name: if estate.owner_name.is_empty() {
                 "Resident".to_string()
             } else {
-                estate.owner_name.clone()
+                super::db::clamp_utf8(&estate.owner_name, 31)
             },
             apartment_description: if estate.greeting.is_empty() {
                 "Foundation Housing Simulator Apartment".to_string()
             } else {
-                estate.greeting.clone()
+                super::db::clamp_utf8(&estate.greeting, 55)
             },
             ..Default::default()
         })
@@ -961,5 +961,31 @@ mod tests {
         assert_eq!(apt.grand_chandelier, 0);
         assert_eq!(apt.window_style, 0);
         assert_eq!(apt.door_style, 0);
+    }
+
+    #[test]
+    fn build_apartment_entries_clamps_name_and_description_to_wire_limits() {
+        let row = HousingEstateRow {
+            is_apartment: true,
+            room_number: 1,
+            owner_name: "가나다라마바사아자차카타파하거너더러".to_string(),
+            estate_name: "아주긴아파트이름테스트데이터가나다라마바사아자차카타파하테스트"
+                .to_string(),
+            ..Default::default()
+        };
+        let entries = build_apartment_entries(&[row], 1);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].resident_name.len() <= 31);
+        assert!(entries[0].apartment_description.len() <= 55);
+        assert!(
+            entries[0]
+                .resident_name
+                .is_char_boundary(entries[0].resident_name.len())
+        );
+        assert!(
+            entries[0]
+                .apartment_description
+                .is_char_boundary(entries[0].apartment_description.len())
+        );
     }
 }

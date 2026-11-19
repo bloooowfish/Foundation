@@ -5,6 +5,14 @@ pub trait Storage: Sync {
     fn max_slots(&self) -> u32;
     fn get_slot_mut(&mut self, index: u16) -> &mut Item;
     fn get_slot(&self, index: u16) -> &Item;
+
+    fn try_get_slot(&self, index: u16) -> Option<&Item> {
+        ((index as u32) < self.max_slots()).then(|| self.get_slot(index))
+    }
+
+    fn try_get_slot_mut(&mut self, index: u16) -> Option<&mut Item> {
+        ((index as u32) < self.max_slots()).then(|| self.get_slot_mut(index))
+    }
 }
 
 /// Finds the first free slot in this container.

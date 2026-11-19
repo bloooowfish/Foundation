@@ -80,11 +80,18 @@ impl Storage for EquippedStorage {
     }
 
     fn get_slot_mut(&mut self, index: u16) -> &mut Item {
-        let Some(index) = EquipSlot::from_repr(index) else {
-            panic!("{index} is not a valid src_container_index?!?")
-        };
+        self.try_get_slot_mut(index)
+            .unwrap_or_else(|| panic!("{index} is not a valid src_container_index?!?"))
+    }
 
-        match index {
+    fn get_slot(&self, index: u16) -> &Item {
+        self.try_get_slot(index)
+            .unwrap_or_else(|| panic!("{index} is not a valid src_container_index?!?"))
+    }
+
+    fn try_get_slot_mut(&mut self, index: u16) -> Option<&mut Item> {
+        let index = EquipSlot::from_repr(index)?;
+        Some(match index {
             EquipSlot::MainHand => &mut self.main_hand,
             EquipSlot::OffHand => &mut self.off_hand,
             EquipSlot::Head => &mut self.head,
@@ -99,15 +106,12 @@ impl Storage for EquippedStorage {
             EquipSlot::RightRing => &mut self.right_ring,
             EquipSlot::LeftRing => &mut self.left_ring,
             EquipSlot::SoulCrystal => &mut self.soul_crystal,
-        }
+        })
     }
 
-    fn get_slot(&self, index: u16) -> &Item {
-        let Some(index) = EquipSlot::from_repr(index) else {
-            panic!("{index} is not a valid src_container_index?!?")
-        };
-
-        match index {
+    fn try_get_slot(&self, index: u16) -> Option<&Item> {
+        let index = EquipSlot::from_repr(index)?;
+        Some(match index {
             EquipSlot::MainHand => &self.main_hand,
             EquipSlot::OffHand => &self.off_hand,
             EquipSlot::Head => &self.head,
@@ -122,7 +126,7 @@ impl Storage for EquippedStorage {
             EquipSlot::RightRing => &self.right_ring,
             EquipSlot::LeftRing => &self.left_ring,
             EquipSlot::SoulCrystal => &self.soul_crystal,
-        }
+        })
     }
 }
 

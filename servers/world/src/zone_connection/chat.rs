@@ -77,10 +77,14 @@ impl ZoneConnection {
     }
 
     pub async fn send_notice(&mut self, message: &str) {
+        let mut end = message.len().min(774);
+        while end > 0 && !message.is_char_boundary(end) {
+            end -= 1;
+        }
         let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::ServerNoticeMessage(
             ServerNoticeMessage {
                 flags: ServerNoticeFlags::CHAT_LOG,
-                message: message.to_string(),
+                message: message[..end].to_string(),
             },
         ));
 

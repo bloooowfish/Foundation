@@ -584,20 +584,15 @@ async fn client_chat_loop(
 
             n = connection.socket.read(&mut buf) => {
                 match n {
+                    Ok(0) => {
+                        tracing::info!("ChatConnection {:#?} closed by peer", client_handle.id);
+                        break;
+                    }
                     Ok(n) => {
-                        // if the last response was over >5 seconds, the client is probably gone
-                        if n == 0 {
-                            let now = Instant::now();
-                            if now.duration_since(connection.last_keep_alive) > NETWORK_TIMEOUT {
-                                tracing::info!("Dropping chat connection from {:?} because it timed out", client_handle.id);
-                                break;
-                            }
-                        } else {
-                            connection.last_keep_alive = Instant::now();
-                            pending_client_bytes.extend_from_slice(&buf[..n]);
-                            for packet in drain_complete_client_packets(&mut pending_client_bytes) {
-                                handle_chat_packet(&mut connection, &packet).await;
-                            }
+                        connection.last_keep_alive = Instant::now();
+                        pending_client_bytes.extend_from_slice(&buf[..n]);
+                        for packet in drain_complete_client_packets(&mut pending_client_bytes) {
+                            handle_chat_packet(&mut connection, &packet).await;
                         }
                     }
                     Err(_) => {
@@ -4826,9 +4821,8 @@ async fn client_loop(
             n = connection.socket.read(&mut buf) => {
                 match n {
                     Ok(0) => {
-                        if !process_packet(&mut connection, &mut lua_player, &mut events, client_handle.clone(), 0, &[]).await {
-                            break;
-                        }
+                        tracing::info!("ZoneConnection {:#?} closed by peer", client_handle.id);
+                        break;
                     }
                     Ok(n) => {
                         pending_client_bytes.extend_from_slice(&buf[..n]);

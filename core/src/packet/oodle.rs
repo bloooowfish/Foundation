@@ -178,7 +178,7 @@ impl OodleNetwork {
     pub fn encode(&mut self, mut input: Vec<u8>) -> Vec<u8> {
         unsafe {
             let output_size = OodleNetwork1_CompressedBufferSizeNeeded(input.len() as isize);
-            let mut out_buf: Vec<u8> = vec![0u8; output_size as usize];
+            let mut out_buf: Vec<u8> = vec![0u8; output_size.max(0) as usize];
 
             let len = OodleNetwork1TCP_Encode(
                 self.state.as_mut_ptr() as *mut c_void, // state
@@ -188,7 +188,17 @@ impl OodleNetwork {
                 out_buf.as_mut_ptr() as *mut c_void,    // comp
             );
 
-            out_buf.truncate(len as usize);
+            if len < 0 {
+                tracing::error!(
+                    len,
+                    input_len = input.len(),
+                    "OodleNetwork1TCP_Encode failed"
+                );
+                out_buf.clear();
+                return out_buf;
+            }
+
+            out_buf.truncate((len as usize).min(out_buf.len()));
             out_buf
         }
     }

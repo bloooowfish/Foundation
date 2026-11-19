@@ -407,15 +407,6 @@ pub fn ensure_estate(
         spec.is_apartment,
     )) as i64;
 
-    if let Some(existing) = housing_estates
-        .filter(house_id.eq(raw_house_id))
-        .select(HousingEstateRow::as_select())
-        .first::<HousingEstateRow>(conn)
-        .optional()?
-    {
-        return Ok(existing);
-    }
-
     let ident = compute_land_ident(
         spec.territory_type_id,
         spec.ward_index,
@@ -424,6 +415,15 @@ pub fn ensure_estate(
         spec.room_number,
         spec.is_apartment,
     );
+
+    if let Some(existing) = housing_estates
+        .filter(house_id.eq(raw_house_id).or(land_ident.eq(ident)))
+        .select(HousingEstateRow::as_select())
+        .first::<HousingEstateRow>(conn)
+        .optional()?
+    {
+        return Ok(existing);
+    }
 
     let mut flag_bits = HousingFlag::OPEN;
     if spec.is_fc {
@@ -870,6 +870,36 @@ pub fn clear_furniture_for_estate(
     }
 }
 
+/// Atomically resets an estate's appearance JSON and deletes placed furnishings for `clear_indoor`/`clear_outdoor` in one transaction.
+pub fn reset_estate_scope(
+    conn: &mut SqliteConnection,
+    updated_estate: &HousingEstateRow,
+    clear_indoor: bool,
+    clear_outdoor: bool,
+) -> QueryResult<usize> {
+    use schema::housing_furniture::dsl::*;
+    let mut target_containers = Vec::new();
+    if clear_indoor {
+        target_containers.extend(placed_container_ids_for_scope(true));
+    }
+    if clear_outdoor {
+        target_containers.extend(placed_container_ids_for_scope(false));
+    }
+    conn.transaction(|conn| {
+        save_estate(conn, updated_estate)?;
+        if target_containers.is_empty() {
+            return Ok(0);
+        }
+        diesel::delete(
+            housing_furniture
+                .filter(land_ident.eq(updated_estate.land_ident))
+                .filter(placed.eq(true))
+                .filter(container_type.eq_any(&target_containers)),
+        )
+        .execute(conn)
+    })
+}
+
 pub fn delete_estate_and_furniture(conn: &mut SqliteConnection, ident: i32) -> QueryResult<usize> {
     conn.transaction(|conn| {
         diesel::delete(
@@ -1006,14 +1036,16 @@ pub fn restore_latest_snapshot(
     ident: i32,
 ) -> QueryResult<(i32, HousingEstateRow)> {
     use schema::housing_snapshots::dsl::*;
-    let latest_id: i32 = housing_snapshots
-        .filter(land_ident.eq(ident))
-        .select(id)
-        .order(id.desc())
-        .first(conn)?;
-    let restored = restore_snapshot(conn, ident, latest_id)?;
-    diesel::delete(housing_snapshots.filter(id.eq(latest_id))).execute(conn)?;
-    Ok((latest_id, restored))
+    conn.transaction(|conn| {
+        let latest_id: i32 = housing_snapshots
+            .filter(land_ident.eq(ident))
+            .select(id)
+            .order(id.desc())
+            .first(conn)?;
+        let restored = restore_snapshot(conn, ident, latest_id)?;
+        diesel::delete(housing_snapshots.filter(id.eq(latest_id))).execute(conn)?;
+        Ok((latest_id, restored))
+    })
 }
 
 pub fn plot_state_for_row(row: &HousingEstateRow, exterior: &HouseExterior) -> PlotState {

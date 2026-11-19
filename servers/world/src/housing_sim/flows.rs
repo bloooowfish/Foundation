@@ -23,7 +23,8 @@ use crate::{GameData, ItemInfoQuery, PlayerData, WorldDatabase, ZoneConnection};
 
 use super::containers::{
     MAX_EXTERIOR_PLACED_SLOTS, MAX_INDOOR_PLACED_SLOTS, containers_for_request,
-    indoor_slot_capacity, placed_container_for_flat_slot,
+    flat_slot_for_placed_container, indoor_slot_capacity, is_interior_placed_container,
+    placed_container_for_flat_slot,
 };
 use super::db::{
     EnsureEstateSpec, HousingEstateRow, HousingFurnitureRow, MAX_ESTATE_GREETING_BYTES,
@@ -41,7 +42,9 @@ use super::gamedata_ext::{
     HousingCatalog, cached_housing_catalog, default_renovation_row_for_district_and_size,
     renovation_territory_for_row,
 };
-use super::live_diff::{IndoorLiveDiff, SyncedIndoorState, compute_indoor_live_diff};
+use super::live_diff::{
+    IndoorLiveDiff, SyncedIndoorFurnitureSlot, SyncedIndoorState, compute_indoor_live_diff,
+};
 use super::overlays::{HousingOverlayKey, HousingOverlayObject, HousingOverlayScope};
 use super::plots::{
     apartment_territory_for_district, city_fallback_aetheryte_for_territory,
@@ -758,8 +761,8 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
         let raw_hid = u64::from(house_id);
         connection
             .actor_control_self(ActorControlCategory::HousingInteriorFinalizeEmpty {
-                house_id_low: (raw_hid & 0xFFFF_FFFF) as u32,
                 house_id_high: (raw_hid >> 32) as u32,
+                house_id_low: (raw_hid & 0xFFFF_FFFF) as u32,
                 estate_type: if is_apartment_territory(zone_id) {
                     6
                 } else {
@@ -793,8 +796,6 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
         list_placed_furniture_in_scope(db.connection_mut(), estate.land_ident, true)
             .unwrap_or_default()
     };
-    connection.housing_sim.synced_indoor_state =
-        Some(SyncedIndoorState::from_db(&estate, zone_id, &placed_rows));
 
     let lists = build_indoor_furniture_lists(
         resolved_house_id,
@@ -829,10 +830,13 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
     );
 
     if has_deferred_tail {
+        connection.housing_sim.synced_indoor_state = None;
         connection.housing_sim.pending_indoor_furniture_list_tail =
             Some(lists[MAX_INITIAL_INDOOR_FURNITURE_LISTS..].to_vec());
     } else {
         connection.housing_sim.pending_indoor_furniture_list_tail = None;
+        connection.housing_sim.synced_indoor_state =
+            Some(SyncedIndoorState::from_db(&estate, zone_id, &placed_rows));
         finish_indoor_ready_sequence(connection, &estate, resolved_house_id, &placed_rows).await;
     }
 
@@ -930,6 +934,9 @@ async fn flush_deferred_indoor_tail(connection: &mut ZoneConnection, reason: &st
             (est, rows)
         };
         if let Some(est) = estate {
+            let zone_id = connection.player_data.volatile.zone_id as u16;
+            connection.housing_sim.synced_indoor_state =
+                Some(SyncedIndoorState::from_db(&est, zone_id, &placed_rows));
             finish_indoor_ready_sequence(
                 connection,
                 &est,
@@ -1137,6 +1144,8 @@ pub async fn warp_into_estate_interior(
                 land_ident: estate.land_ident,
                 preserve_pos,
                 preserve_rot,
+                expected_transit_zone_id: estate.territory_type_id as u16,
+                expected_transit_ward_index: estate.ward_index as u8,
                 ready_at: None,
             });
         if estate.is_apartment {
@@ -1154,6 +1163,7 @@ pub async fn warp_into_estate_interior(
     }
 
     let house_id = HouseId::from(estate.house_id as u64);
+    connection.housing_sim.clear_pending_indoor_reentry();
     connection.housing_sim.active_estate = Some(build_selection_from_row(estate, true));
     connection
         .handle
@@ -1334,7 +1344,18 @@ pub async fn execute_housing_reload(
             return;
         }
 
-        if mode != ReloadMode::ZoneReload && same_territory && same_estate {
+        if connection
+            .housing_sim
+            .pending_indoor_furniture_list_tail
+            .is_some()
+        {
+            tracing::info!(
+                land_ident = estate.land_ident,
+                zone_id = current_zone_id,
+                "Deferred indoor tail still pending during reload; clearing pending tail and falling back to indoor zone reload"
+            );
+            connection.housing_sim.clear_pending_indoor_load();
+        } else if mode != ReloadMode::ZoneReload && same_territory && same_estate {
             let placed_rows = {
                 let mut db = connection.database.lock();
                 list_placed_furniture_in_scope(db.connection_mut(), estate.land_ident, true)
@@ -1385,9 +1406,12 @@ pub async fn execute_housing_reload(
                     total_ops = diff.total_furniture_ops(),
                     "ReloadMode::Auto exceeded live diff threshold; falling back to indoor zone reload"
                 );
-            } else if mode == ReloadMode::LivePackets {
-                push_indoor_live_refresh(connection, &estate).await;
-                return;
+            } else {
+                tracing::info!(
+                    land_ident = estate.land_ident,
+                    zone_id = current_zone_id,
+                    "Missing or mismatched synced_indoor_state during live reload; falling back to indoor zone reload"
+                );
             }
         }
 
@@ -1509,39 +1533,102 @@ pub async fn push_indoor_live_refresh(connection: &mut ZoneConnection, estate: &
 
     send_indoor_object_data_value_sets(connection, &placed).await;
     rebuild_house_inventory_from_db(connection, estate, true);
-    let current_zone_id = connection.player_data.volatile.zone_id as u16;
-    if is_house_interior_territory(current_zone_id) || is_apartment_territory(current_zone_id) {
-        connection.housing_sim.synced_indoor_state =
-            Some(SyncedIndoorState::from_db(estate, current_zone_id, &placed));
-    }
+    patch_synced_indoor_meta(connection, estate);
     sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingIndoor).await;
 }
 
-/// Refreshes the in-memory mirrored client state after in-game indoor furniture/lighting mutations.
-pub fn refresh_synced_indoor_state_from_db(connection: &mut ZoneConnection, land_ident: i32) {
-    let Some(existing_zone_id) = connection
-        .housing_sim
-        .synced_indoor_state
-        .as_ref()
-        .filter(|s| s.land_ident == land_ident)
-        .map(|s| s.territory_type_id)
-    else {
+/// Patches only indoor shell/lighting metadata in `synced_indoor_state` without touching furniture slots.
+pub fn patch_synced_indoor_meta(connection: &mut ZoneConnection, estate: &HousingEstateRow) {
+    if let Some(ref mut synced) = connection.housing_sim.synced_indoor_state
+        && synced.land_ident == estate.land_ident
+    {
+        synced.interior_json = estate.interior_json.clone();
+        synced.light_level = estate.light_level;
+        synced.enable_ssao = estate.enable_ssao;
+    }
+}
+
+/// Inserts or replaces a single indoor placed furnishing slot in `synced_indoor_state`.
+pub fn patch_synced_indoor_slot(
+    connection: &mut ZoneConnection,
+    land_ident: i32,
+    row: &HousingFurnitureRow,
+) {
+    let Some(ref mut synced) = connection.housing_sim.synced_indoor_state else {
         return;
     };
-
-    let (estate_opt, placed_rows) = {
-        let mut db = connection.database.lock();
-        let conn = db.connection_mut();
-        let est = estate_by_land_ident(conn, land_ident).ok().flatten();
-        let rows = list_placed_furniture_in_scope(conn, land_ident, true).unwrap_or_default();
-        (est, rows)
+    if synced.land_ident != land_ident {
+        return;
+    }
+    let Some(ctype) = super::containers::container_from_i32(row.container_type) else {
+        return;
     };
-    if let Some(est) = estate_opt {
-        connection.housing_sim.synced_indoor_state = Some(SyncedIndoorState::from_db(
-            &est,
-            existing_zone_id,
-            &placed_rows,
-        ));
+    if !is_interior_placed_container(ctype) {
+        return;
+    }
+    let slot_in_page = row.slot.max(0) as u16;
+    let Some(flat_slot) = flat_slot_for_placed_container(ctype, slot_in_page) else {
+        return;
+    };
+    if !row.placed {
+        synced.slots.remove(&flat_slot);
+        return;
+    }
+    synced.slots.insert(
+        flat_slot,
+        SyncedIndoorFurnitureSlot {
+            flat_slot,
+            container_type: ctype,
+            slot_in_page,
+            item_id: row.item_id.max(0) as u32,
+            catalog_id: row.catalog_id.max(0) as u16,
+            stain: row.stain.clamp(0, u8::MAX as i32) as u8,
+            material_item_key: row.material_item_key.max(0) as u16,
+            pos_x: row.pos_x,
+            pos_y: row.pos_y,
+            pos_z: row.pos_z,
+            rotation: row.rotation,
+            object_data_json: row.object_data_json.clone(),
+        },
+    );
+}
+
+/// Mutates a single existing indoor placed slot in `synced_indoor_state` in place.
+pub fn mutate_synced_indoor_slot<F: FnOnce(&mut SyncedIndoorFurnitureSlot)>(
+    connection: &mut ZoneConnection,
+    land_ident: i32,
+    container_type: ContainerType,
+    slot_in_page: u16,
+    mutate: F,
+) {
+    let Some(ref mut synced) = connection.housing_sim.synced_indoor_state else {
+        return;
+    };
+    if synced.land_ident != land_ident || !is_interior_placed_container(container_type) {
+        return;
+    }
+    if let Some(flat_slot) = flat_slot_for_placed_container(container_type, slot_in_page)
+        && let Some(slot) = synced.slots.get_mut(&flat_slot)
+    {
+        mutate(slot);
+    }
+}
+
+/// Removes a single indoor placed furnishing slot from `synced_indoor_state`.
+pub fn remove_synced_indoor_slot(
+    connection: &mut ZoneConnection,
+    land_ident: i32,
+    container_type: ContainerType,
+    slot_in_page: u16,
+) {
+    let Some(ref mut synced) = connection.housing_sim.synced_indoor_state else {
+        return;
+    };
+    if synced.land_ident != land_ident || !is_interior_placed_container(container_type) {
+        return;
+    }
+    if let Some(flat_slot) = flat_slot_for_placed_container(container_type, slot_in_page) {
+        synced.slots.remove(&flat_slot);
     }
 }
 
@@ -1620,7 +1707,7 @@ pub async fn push_indoor_live_diff(
                 storage_id: new.container_type,
                 slot: new.slot_in_page,
                 item_id: new.catalog_id,
-                unk1: 1,
+                unk1: new.material_item_key,
                 stain: new.stain,
                 unk2: [0; 3],
                 rotation: new.rotation,
@@ -1628,16 +1715,6 @@ pub async fn push_indoor_live_diff(
                 unk3: [0; 4],
             },
         ));
-        if new.material_item_key > 0 {
-            segments.push(ServerZoneIpcSegment::new(
-                ServerZoneIpcData::IndoorFurnitureMaterialUpdated(IndoorFurnitureMaterialUpdated {
-                    material_item_key: new.material_item_key,
-                    container_id: new.container_type,
-                    slot: new.slot_in_page as u8,
-                    pad0: [0; 3],
-                }),
-            ));
-        }
         let value_set = row_by_slot
             .get(&(new.container_type as i32, new.slot_in_page as i32))
             .and_then(|row| {
@@ -1669,7 +1746,7 @@ pub async fn push_indoor_live_diff(
         ));
     }
 
-    // 4. Live Stain Updates (317).
+    // 4. Live Stain Updates (317) + mirror inventory slot (315).
     for stained in &diff.stained {
         if let Some(item) = connection
             .player_data
@@ -1677,6 +1754,15 @@ pub async fn push_indoor_live_diff(
             .get_item_mut(stained.container_type, stained.slot_in_page)
         {
             item.stains = [stained.stain, 0];
+            let updated_item = *item;
+            segments.push(ServerZoneIpcSegment::new(
+                ServerZoneIpcData::UpdateInventorySlot(ItemInfo {
+                    sequence,
+                    slot: stained.slot_in_page,
+                    container: stained.container_type,
+                    ..updated_item.into()
+                }),
+            ));
         }
         segments.push(ServerZoneIpcSegment::new(
             ServerZoneIpcData::HousingStainUpdated(HousingStainUpdated {
@@ -1904,39 +1990,55 @@ pub fn apply_preset_layout_with_catalog(
     actor_content_id: u64,
     snapshot_label: &str,
 ) -> Result<(super::remake_place::PreparedReMakePlaceApply, Option<i32>), String> {
+    use diesel::Connection;
+
+    enum ApplyTxError {
+        NotFound,
+        Diesel(diesel::result::Error),
+    }
+    impl From<diesel::result::Error> for ApplyTxError {
+        fn from(value: diesel::result::Error) -> Self {
+            Self::Diesel(value)
+        }
+    }
+
     let mut db = database.lock();
     let conn = db.connection_mut();
-    let estate = estate_by_land_ident(conn, land_ident)
-        .map_err(|e| format!("Database error loading estate {land_ident}: {e}"))?
-        .ok_or_else(|| format!("Housing estate land_ident={land_ident} not found"))?;
+    conn.transaction::<_, ApplyTxError, _>(|conn| {
+        let estate = estate_by_land_ident(conn, land_ident)?.ok_or(ApplyTxError::NotFound)?;
 
-    let snap_id = super::db::create_snapshot(conn, land_ident, snapshot_label).ok();
-    let existing_indoor = if scope.includes_interior() {
-        list_placed_furniture_in_scope(conn, land_ident, true).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let prepared = super::remake_place::prepare_apply_layout_with_existing(
-        &estate,
-        layout,
-        catalog,
-        scope,
-        actor_content_id,
-        &existing_indoor,
-    );
+        let snap_id = super::db::create_snapshot(conn, land_ident, snapshot_label).ok();
+        let existing_indoor = if scope.includes_interior() {
+            list_placed_furniture_in_scope(conn, land_ident, true)?
+        } else {
+            Vec::new()
+        };
+        let prepared = super::remake_place::prepare_apply_layout_with_existing(
+            &estate,
+            layout,
+            catalog,
+            scope,
+            actor_content_id,
+            &existing_indoor,
+        );
 
-    save_estate(conn, &prepared.updated_estate)
-        .map_err(|e| format!("Failed to update housing_estates: {e}"))?;
-    super::db::replace_placed_furniture_for_scope(
-        conn,
-        land_ident,
-        prepared.replace_indoor,
-        prepared.replace_outdoor,
-        &prepared.furniture_rows,
-    )
-    .map_err(|e| format!("Failed to replace housing_furniture: {e}"))?;
+        save_estate(conn, &prepared.updated_estate)?;
+        super::db::replace_placed_furniture_for_scope(
+            conn,
+            land_ident,
+            prepared.replace_indoor,
+            prepared.replace_outdoor,
+            &prepared.furniture_rows,
+        )?;
 
-    Ok((prepared, snap_id))
+        Ok((prepared, snap_id))
+    })
+    .map_err(|e| match e {
+        ApplyTxError::NotFound => format!("Housing estate land_ident={land_ident} not found"),
+        ApplyTxError::Diesel(err) => {
+            format!("Failed to apply housing preset for {land_ident}: {err}")
+        }
+    })
 }
 
 /// Sends `HousingWardInfo` (`624`) when player opens the ward residential directory.
@@ -1970,11 +2072,12 @@ pub async fn send_housing_ward_info(connection: &mut ZoneConnection, zone_id: u1
             summary.plot_price = estate.price.max(0) as u32;
             summary.flags = ward_summary_flags_for_estate(&estate);
             summary.tags = appeal_tags_from_row(&estate);
-            summary.name = if estate.estate_name.is_empty() {
-                estate.owner_name.clone()
+            let raw_name = if estate.estate_name.is_empty() {
+                &estate.owner_name
             } else {
-                estate.estate_name.clone()
+                &estate.estate_name
             };
+            summary.name = clamp_utf8(raw_name, 31);
         }
     }
 
@@ -2032,6 +2135,7 @@ pub async fn send_housing_placard_info(
             connection.housing_sim.is_owner_authorized = true;
             rebuild_house_inventory_from_db(connection, est, false);
             send_owned_housing(connection).await;
+            publish_session_snapshot(connection, TerritoryIntendedUse::HousingOutdoor);
         }
 
         let ext = StoredHouseExterior::from_json(&est.exterior_json).to_packet_exterior();
@@ -2067,7 +2171,7 @@ pub async fn send_housing_placard_info(
                     estate_name: clamp_utf8(&est.estate_name, MAX_ESTATE_NAME_BYTES),
                     unk3: 0,
                     estate_greeting: clamp_utf8(&est.greeting, MAX_ESTATE_GREETING_BYTES),
-                    owner_name: est.owner_name.clone(),
+                    owner_name: clamp_utf8(&est.owner_name, super::db::MAX_OWNER_NAME_BYTES),
                     fc_tag: String::new(),
                     unk4: 0,
                     tags: appeal_tags_from_row(est),
@@ -2244,7 +2348,7 @@ pub fn apply_simulator_unlock_to_player_data(
 /// Persists full simulator unlock across one or all characters in `world.db`.
 pub fn unlock_characters_in_database(
     db: &mut WorldDatabase,
-    game_data: Option<&parking_lot::Mutex<GameData>>,
+    game_data: Option<&GameData>,
     filter_content_id: Option<u64>,
 ) -> Result<Vec<String>, diesel::result::Error> {
     let characters = db.find_character_rows(filter_content_id)?;
@@ -2252,10 +2356,8 @@ pub fn unlock_characters_in_database(
 
     for character in characters {
         let mut pdata = db.load_player_data_raw(character)?;
-        let exp_index = game_data.and_then(|gd| {
-            gd.lock()
-                .get_exp_array_index(pdata.classjob.current_class as u16)
-        });
+        let exp_index =
+            game_data.and_then(|gd| gd.get_exp_array_index(pdata.classjob.current_class as u16));
         apply_simulator_unlock_to_player_data(&mut pdata, exp_index);
         let name = pdata.character.name.clone();
         db.commit_player_data(&pdata);
@@ -2439,8 +2541,7 @@ mod tests {
             )
             .0;
 
-        let gd_mutex = parking_lot::Mutex::new(game_data.clone());
-        let names = unlock_characters_in_database(&mut db, Some(&gd_mutex), None)
+        let names = unlock_characters_in_database(&mut db, Some(game_data), None)
             .expect("unlock should succeed");
         assert_eq!(names.len(), 2);
 
@@ -2482,5 +2583,34 @@ mod tests {
             .load_player_data_raw(first_row)
             .expect("first raw player data must load");
         assert_eq!(first_pdata.inventory.currency.gil.quantity, 99_999_999);
+    }
+
+    #[test]
+    fn housing_interior_finalize_empty_serializes_high_before_low_word() {
+        use binrw::BinWrite;
+        use std::io::Cursor;
+
+        let raw_hid: u64 = 0x1122_3344_5566_7788;
+        let pkt = ActorControlSelf {
+            category: ActorControlCategory::HousingInteriorFinalizeEmpty {
+                house_id_high: (raw_hid >> 32) as u32,
+                house_id_low: (raw_hid & 0xFFFF_FFFF) as u32,
+                estate_type: 6,
+            },
+        };
+        let mut buf = Cursor::new(Vec::new());
+        pkt.write_le(&mut buf)
+            .expect("ActorControlSelf should serialize");
+        let bytes = buf.into_inner();
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1048);
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            0x1122_3344
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            0x5566_7788
+        );
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 6);
     }
 }

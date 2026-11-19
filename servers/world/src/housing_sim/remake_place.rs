@@ -246,7 +246,7 @@ pub fn ffxiv_to_makeplace_transform(
 /// Parses 6-char `RRGGBB` or 8-char `RRGGBBAA` hex color string into `[r, g, b]`.
 pub fn parse_hex_rgb(raw: &str) -> Option<[u8; 3]> {
     let trimmed = raw.trim().trim_start_matches('#');
-    if trimmed.len() < 6 {
+    if !trimmed.is_ascii() || trimmed.len() < 6 {
         return None;
     }
     let r = u8::from_str_radix(&trimmed[0..2], 16).ok()?;
@@ -1149,40 +1149,75 @@ fn export_scope_furniture(
 
 /// Validates a path inside allowed preset/export directories to prevent arbitrary path traversal when browsing over HTTP or Lua.
 pub fn resolve_safe_preset_path(raw: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
-    let candidate = Path::new(raw.trim());
-    if candidate.as_os_str().is_empty() {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return Err("Empty preset path".to_string());
     }
+    let candidate = Path::new(trimmed);
+    let canon_roots: Vec<PathBuf> = roots
+        .iter()
+        .filter_map(|r| std::fs::canonicalize(r).ok())
+        .collect();
+    let is_within_roots =
+        |canon_path: &Path| canon_roots.iter().any(|root| canon_path.starts_with(root));
+
     if candidate.is_absolute() {
-        if candidate.exists() {
-            return Ok(candidate.to_path_buf());
+        if let Ok(canon) = std::fs::canonicalize(candidate) {
+            if is_within_roots(&canon) {
+                return Ok(canon);
+            }
+            return Err(format!(
+                "Preset path '{}' is outside configured preset roots",
+                candidate.display()
+            ));
         }
         return Err(format!(
             "Preset file '{}' does not exist",
             candidate.display()
         ));
     }
-    for root in roots {
-        let joined = root.join(candidate);
-        if joined.exists() {
-            return Ok(joined);
+
+    let mut attempts = vec![candidate.to_path_buf()];
+    if candidate.extension().is_none() {
+        attempts.push(PathBuf::from(format!("{trimmed}.json")));
+    }
+    for root in &canon_roots {
+        for rel in &attempts {
+            if let Ok(canon) = std::fs::canonicalize(root.join(rel))
+                && canon.starts_with(root)
+            {
+                return Ok(canon);
+            }
         }
     }
-    let with_json = if candidate.extension().is_none() {
-        PathBuf::from(format!("{raw}.json"))
-    } else {
-        candidate.to_path_buf()
-    };
-    for root in roots {
-        let joined = root.join(&with_json);
-        if joined.exists() {
-            return Ok(joined);
-        }
-    }
-    if Path::new(raw).exists() {
-        return Ok(PathBuf::from(raw));
-    }
+
     Err(format!("Preset file '{raw}' not found in configured roots"))
+}
+
+/// Sanitizes a requested preset export filename into a `.json` filename without doubling `_json.json`.
+pub fn sanitize_export_filename(raw_name: &str) -> String {
+    let trimmed = raw_name.trim();
+    let stem_raw =
+        if trimmed.len() >= 5 && trimmed[trimmed.len() - 5..].eq_ignore_ascii_case(".json") {
+            &trimmed[..trimmed.len() - 5]
+        } else {
+            trimmed
+        };
+    let safe_stem: String = stem_raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe_stem.trim_matches('_').is_empty() {
+        "estate_export.json".to_string()
+    } else {
+        format!("{safe_stem}.json")
+    }
 }
 
 /// Lists metadata for `.json` layouts inside configured preset directories.
@@ -1630,5 +1665,34 @@ mod tests {
         let attach_meta: FurnitureRemakeMeta =
             serde_json::from_str(&prepared.furniture_rows[1].remake_meta_json).unwrap();
         assert_eq!(attach_meta.parent_slot, Some(5));
+    }
+
+    #[test]
+    fn parse_hex_rgb_rejects_multibyte_utf8_without_panicking() {
+        assert_eq!(parse_hex_rgb("#EFEFEFFF"), Some([0xEF, 0xEF, 0xEF]));
+        assert_eq!(parse_hex_rgb("빨간색"), None);
+        assert_eq!(parse_hex_rgb("#한글색상값"), None);
+    }
+
+    #[test]
+    fn resolve_safe_preset_path_blocks_traversal_and_outside_absolute_paths() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "kawari_preset_scope_test_{}_{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        let root = temp_base.join("allowed");
+        let outside = temp_base.join("secret.json");
+        let inside = root.join("room.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&outside, "{}").unwrap();
+        std::fs::write(&inside, "{}").unwrap();
+
+        let roots = vec![root.clone()];
+        assert!(resolve_safe_preset_path("room", &roots).is_ok());
+        assert!(resolve_safe_preset_path("../secret.json", &roots).is_err());
+        assert!(resolve_safe_preset_path(outside.to_str().unwrap(), &roots).is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_base);
     }
 }

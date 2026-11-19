@@ -9,9 +9,9 @@ use crate::ZoneConnection;
 
 use super::db::{
     HousingEstateRow, MAX_ESTATE_GREETING_BYTES, MAX_ESTATE_NAME_BYTES, clamp_utf8,
-    create_snapshot, delete_furniture_slot, estate_by_land_ident, list_all_estates,
-    list_placed_furniture_in_scope, list_snapshots, owned_estates_for_character,
-    restore_latest_snapshot, save_estate,
+    create_snapshot, estate_by_land_ident, list_all_estates, list_placed_furniture_in_scope,
+    list_snapshots, owned_estates_for_character, reset_estate_scope, restore_latest_snapshot,
+    save_estate,
 };
 use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
 use super::flows::{
@@ -32,7 +32,7 @@ use super::plots::{
 };
 use super::remake_place::{
     PresetScope, export_estate_to_layout, parse_layout_bytes, prepare_apply_layout,
-    read_layout_file, resolve_safe_preset_path, scan_preset_directory,
+    read_layout_file, resolve_safe_preset_path, sanitize_export_filename, scan_preset_directory,
 };
 use super::session::{HousingSseEvent, ReloadMode, WardContext};
 
@@ -301,6 +301,7 @@ async fn activate_and_warp_estate(
     go_indoor: bool,
     requested_size_note: Option<PlotSize>,
 ) {
+    connection.housing_sim.clear_pending_indoor_reentry();
     let division = estate.division.clamp(0, 1) as u8;
     connection.housing_sim.authoritative_ward_context = Some(WardContext {
         territory_type_id: estate.territory_type_id as u16,
@@ -311,6 +312,17 @@ async fn activate_and_warp_estate(
     connection.housing_sim.is_owner_authorized = true;
     rebuild_house_inventory_from_db(connection, estate, go_indoor);
     send_owned_housing(connection).await;
+    let current_zone_id = connection.player_data.volatile.zone_id as u16;
+    let current_intended_use = if is_house_interior_territory(current_zone_id)
+        || is_apartment_territory(current_zone_id)
+    {
+        kawari::common::TerritoryIntendedUse::HousingIndoor
+    } else if kawari::common::internal_housing_row(current_zone_id).is_some() {
+        kawari::common::TerritoryIntendedUse::HousingOutdoor
+    } else {
+        kawari::common::TerritoryIntendedUse::Town
+    };
+    publish_session_snapshot(connection, current_intended_use);
 
     let size = requested_size_note.unwrap_or_else(|| {
         PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default()
@@ -599,10 +611,12 @@ async fn cmd_enter(connection: &mut ZoneConnection, args: &[String]) {
             .await;
         return;
     };
+    connection.housing_sim.clear_pending_indoor_reentry();
     warp_into_estate_interior(connection, &est, None, None).await;
 }
 
 async fn cmd_exit(connection: &mut ZoneConnection) {
+    connection.housing_sim.clear_pending_indoor_reentry();
     let zone_id = connection.player_data.volatile.zone_id as u16;
     if is_apartment_lobby_territory(zone_id) || is_apartment_territory(zone_id) {
         if let Some(ident) = active_land_ident(connection)
@@ -723,43 +737,46 @@ async fn cmd_reset(connection: &mut ZoneConnection, args: &[String]) {
         .and_then(|s| PresetScope::from_str_loose(s))
         .unwrap_or(PresetScope::All);
     let catalog = connection_catalog(connection);
-    {
+    let reset_ok = {
+        use diesel::Connection;
+
         let mut db = connection.database.lock();
         let conn = db.connection_mut();
-        let Some(mut est) = estate_by_land_ident(conn, ident).ok().flatten() else {
-            return;
-        };
-        let _ = create_snapshot(conn, ident, &format!("reset ({scope:?})"));
-        let size = PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8).unwrap_or_default();
-        if scope.includes_interior() {
-            let def_int = StoredHouseInterior::default_for_location(
-                &catalog,
-                est.territory_type_id as u16,
-                size,
-                est.is_apartment,
-            );
-            est.interior_json = def_int.to_json();
-        }
-        if scope.includes_exterior() && !est.is_apartment {
-            let def_ext = StoredHouseExterior::default_for_location(
-                &catalog,
-                est.territory_type_id as u16,
-                size,
-            );
-            est.exterior_json = def_ext.to_json();
-        }
-        let _ = save_estate(conn, &est);
-
-        if scope.includes_interior() {
-            for r in list_placed_furniture_in_scope(conn, ident, true).unwrap_or_default() {
-                let _ = delete_furniture_slot(conn, ident, r.container_type, r.slot);
+        conn.transaction::<_, diesel::result::Error, _>(|conn| {
+            let Some(mut est) = estate_by_land_ident(conn, ident)? else {
+                return Err(diesel::result::Error::NotFound);
+            };
+            let _ = create_snapshot(conn, ident, &format!("reset ({scope:?})"));
+            let size = PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8).unwrap_or_default();
+            if scope.includes_interior() {
+                let def_int = StoredHouseInterior::default_for_location(
+                    &catalog,
+                    est.territory_type_id as u16,
+                    size,
+                    est.is_apartment,
+                );
+                est.interior_json = def_int.to_json();
             }
-        }
-        if scope.includes_exterior() {
-            for r in list_placed_furniture_in_scope(conn, ident, false).unwrap_or_default() {
-                let _ = delete_furniture_slot(conn, ident, r.container_type, r.slot);
+            if scope.includes_exterior() && !est.is_apartment {
+                let def_ext = StoredHouseExterior::default_for_location(
+                    &catalog,
+                    est.territory_type_id as u16,
+                    size,
+                );
+                est.exterior_json = def_ext.to_json();
             }
-        }
+            reset_estate_scope(
+                conn,
+                &est,
+                scope.includes_interior(),
+                scope.includes_exterior(),
+            )?;
+            Ok(())
+        })
+        .is_ok()
+    };
+    if !reset_ok {
+        return;
     }
     execute_housing_reload(connection, Some(ident), ReloadMode::Auto, true, false).await;
     connection
@@ -1281,21 +1298,7 @@ async fn cmd_export(connection: &mut ZoneConnection, args: &[String]) {
     let export_dir = PathBuf::from("housing-exports");
     let _ = std::fs::create_dir_all(&export_dir);
     let raw_name = name_arg.unwrap_or_else(|| format!("estate_{ident}"));
-    let safe_stem: String = raw_name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let filename = if safe_stem.ends_with(".json") {
-        safe_stem
-    } else {
-        format!("{safe_stem}.json")
-    };
+    let filename = sanitize_export_filename(&raw_name);
     let out_path = export_dir.join(filename);
     match serde_json::to_string_pretty(&layout) {
         Ok(json) => match std::fs::write(&out_path, json) {

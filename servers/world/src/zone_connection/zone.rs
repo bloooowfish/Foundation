@@ -317,8 +317,8 @@ impl ZoneConnection {
 
         let furniture;
         {
-            let mut database = self.database.lock();
             let mut gamedata = self.game_data.lock();
+            let mut database = self.database.lock();
             let all_houses = database.find_houses_in_ward(&mut gamedata, zone_id, ward_id);
             // TODO: Furniture is always empty for now, see database/housing.rs
             furniture =
