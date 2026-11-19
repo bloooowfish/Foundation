@@ -1076,7 +1076,17 @@ pub fn change_zone_to_player(
         destination_zone_id = target_instance.zone.id;
     }
 
-    let from_actor_id = network.clients.get(&from_id).unwrap().0.actor_id;
+    let Some(from_actor_id) = network
+        .clients
+        .get(&from_id)
+        .map(|(handle, _)| handle.actor_id)
+    else {
+        tracing::warn!(
+            client_id = ?from_id,
+            "Skipping change_zone_to_player because client is no longer registered"
+        );
+        return;
+    };
 
     let (target_instance, needs_init_zone) = begin_change_zone(
         data,
@@ -1115,14 +1125,23 @@ pub(crate) fn do_change_zone(
     from_id: ClientId,
     warp_type: WarpType,
 ) {
-    let actor_id = network.clients.get(&from_id).unwrap().0.actor_id;
-    let state = network.get_state_mut(from_id).unwrap();
+    let Some(actor_id) = network.clients.get_mut(&from_id).map(|(handle, state)| {
+        if needs_init_zone {
+            // Clear spawn pools
+            state.actor_allocator.clear();
+            state.object_allocator.clear();
+        }
+        handle.actor_id
+    }) else {
+        tracing::warn!(
+            client_id = ?from_id,
+            zone_id = target_instance.zone.id,
+            "Skipping do_change_zone because client is no longer registered"
+        );
+        return;
+    };
 
     if needs_init_zone {
-        // Clear spawn pools
-        state.actor_allocator.clear();
-        state.object_allocator.clear();
-
         // now that we have all of the data needed, inform the connection of where they need to be
         let msg = FromServer::ChangeZone(
             exit_position.unwrap_or_default(),
@@ -1685,5 +1704,22 @@ mod tests {
             );
             assert!(pos.0.length() > 0.0);
         }
+    }
+
+    #[test]
+    fn do_change_zone_skips_missing_client_without_panicking() {
+        let mut network = NetworkState::default();
+        let mut target_instance = Instance::default();
+        do_change_zone(
+            &mut network,
+            &mut target_instance,
+            true,
+            None,
+            None,
+            ClientId::default(),
+            WarpType::Normal,
+        );
+        assert!(target_instance.queued_tasks.is_empty());
+        assert!(network.to_remove.is_empty());
     }
 }

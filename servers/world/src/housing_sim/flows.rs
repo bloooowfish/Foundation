@@ -1750,7 +1750,78 @@ pub async fn push_indoor_live_diff(
     rebuild_house_inventory_from_db(connection, estate, true);
     connection.housing_sim.synced_indoor_state = Some(next_state);
     if diff.needs_overlay_sync() {
-        sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingIndoor).await;
+        let catalog = connection_catalog(connection);
+        let ward_index = estate.ward_index as u8;
+        let plot_index = estate.plot_index as u8;
+        let actor_id = connection.player_data.character.actor_id;
+
+        for old in &diff.removed {
+            if catalog.is_interactable(old.catalog_id, true) {
+                connection
+                    .handle
+                    .send(ToServer::HousingSim(
+                        HousingSimToServer::RemoveSingleOverlay {
+                            actor_id,
+                            key: HousingOverlayKey {
+                                indoors: true,
+                                ward_index,
+                                plot_index,
+                                slot: old.flat_slot,
+                            },
+                        },
+                    ))
+                    .await;
+            }
+        }
+        for new in &diff.added {
+            if catalog.is_interactable(new.catalog_id, true) {
+                connection
+                    .handle
+                    .send(ToServer::HousingSim(
+                        HousingSimToServer::UpsertSingleOverlay {
+                            actor_id,
+                            object: HousingOverlayObject {
+                                key: HousingOverlayKey {
+                                    indoors: true,
+                                    ward_index,
+                                    plot_index,
+                                    slot: new.flat_slot,
+                                },
+                                catalog_id: new.catalog_id,
+                                position: Position(glam::Vec3A::new(
+                                    new.pos_x, new.pos_y, new.pos_z,
+                                )),
+                                rotation: new.rotation,
+                            },
+                        },
+                    ))
+                    .await;
+            }
+        }
+        for moved in &diff.moved {
+            if catalog.is_interactable(moved.catalog_id, true) {
+                connection
+                    .handle
+                    .send(ToServer::HousingSim(
+                        HousingSimToServer::TranslateSingleOverlay {
+                            actor_id,
+                            key: HousingOverlayKey {
+                                indoors: true,
+                                ward_index,
+                                plot_index,
+                                slot: moved.flat_slot,
+                            },
+                            position: Position(glam::Vec3A::new(
+                                moved.pos_x,
+                                moved.pos_y,
+                                moved.pos_z,
+                            )),
+                            rotation: moved.rotation,
+                        },
+                    ))
+                    .await;
+            }
+        }
     }
 
     let summary_ko = diff.summary_ko();

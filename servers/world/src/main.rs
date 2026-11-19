@@ -442,6 +442,8 @@ async fn initial_setup(
 }
 
 // TODO: Is there a sensible way we can reuse the other ClientData type so we don't need 2?
+const CLIENT_CHANNEL_CAPACITY: usize = 2048;
+
 struct ClientChatData {
     /// Socket for data recieved from the global server
     recv: Receiver<FromServer>,
@@ -451,7 +453,7 @@ struct ClientChatData {
 
 /// Spawn a new chat connection for an incoming client.
 fn spawn_chat_connection(connection: ChatConnection, pending_client_bytes: Vec<u8>) {
-    let (send, recv) = channel(64);
+    let (send, recv) = channel(CLIENT_CHANNEL_CAPACITY);
 
     let id = &connection.id.clone();
     let actor_id = &connection.player_data.actor_id.clone();
@@ -639,7 +641,7 @@ struct ClientZoneData {
 
 /// Spawn a new client actor.
 fn spawn_client(connection: ZoneConnection, pending_client_bytes: Vec<u8>) {
-    let (send, recv) = channel(64);
+    let (send, recv) = channel(CLIENT_CHANNEL_CAPACITY);
 
     let id = &connection.id.clone();
     let actor_id = &connection.player_data.character.actor_id.clone();

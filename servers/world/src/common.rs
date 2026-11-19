@@ -7,7 +7,7 @@ use std::{
 };
 
 use icarus::Quest::QuestSheet;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Sender, error::TrySendError};
 
 use crate::{
     StatusEffects,
@@ -261,17 +261,33 @@ pub struct ClientHandle {
 }
 
 impl ClientHandle {
-    /// Send a message to this client actor. Will emit an error if sending does
-    /// not succeed immediately, as this means that forwarding messages to the
-    /// tcp connection cannot keep up.
+    /// Send a message to this client actor.
+    ///
+    /// Returns `Err` only when the client's receiver has closed; if the bounded
+    /// buffer is temporarily saturated (`TrySendError::Full`), logs a warning and
+    /// drops the message instead of silently evicting a live TCP connection.
     pub fn send(&mut self, msg: FromServer) -> Result<(), std::io::Error> {
-        if self.channel.try_send(msg).is_err() {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "Can't keep up or dead",
-            ))
-        } else {
-            Ok(())
+        match self.channel.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                tracing::warn!(
+                    client_id = ?self.id,
+                    actor_id = self.actor_id.0,
+                    "Dropping FromServer message because client outbound channel is full (keeping client connected)"
+                );
+                Ok(())
+            }
+            Err(TrySendError::Closed(_)) => {
+                tracing::warn!(
+                    client_id = ?self.id,
+                    actor_id = self.actor_id.0,
+                    "Client outbound channel is closed; marking client for removal"
+                );
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Client channel closed",
+                ))
+            }
         }
     }
 
@@ -584,4 +600,29 @@ pub fn roll_die(num_sides: u16) -> (u16, u16) {
     let roll_result = fastrand::u16(1..sides_clamped + 1); // +1 since this range is exclusive, and we *do* allow the maximum value to be rolled.
 
     (sides_result, roll_result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::channel;
+
+    #[test]
+    fn client_handle_send_drops_on_full_without_disconnecting_and_errors_on_closed() {
+        let (tx, rx) = channel(1);
+        let mut handle = ClientHandle {
+            id: ClientId(7),
+            channel: tx,
+            actor_id: ObjectId(100),
+            content_id: 42,
+            account_id: 1,
+        };
+
+        assert!(handle.send(FromServer::ChatDisconnected).is_ok());
+        assert!(handle.send(FromServer::ChatDisconnected).is_ok());
+
+        drop(rx);
+        let err = handle.send(FromServer::ChatDisconnected).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    }
 }

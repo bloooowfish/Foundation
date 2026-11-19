@@ -1607,6 +1607,13 @@ pub(crate) fn handle_server_housing_message(
         } => {
             let mut data = data.lock();
             let mut network = network.lock();
+            if !network.clients.contains_key(client_id) {
+                tracing::warn!(
+                    client_id = ?client_id,
+                    "Skipping WarpToHouseInterior because client is no longer registered"
+                );
+                return true;
+            }
             let mut game_data = game_data.lock();
             let lua = lua.lock();
 
@@ -1653,6 +1660,13 @@ pub(crate) fn handle_server_housing_message(
         } => {
             let mut data = data.lock();
             let mut network = network.lock();
+            if !network.clients.contains_key(client_id) {
+                tracing::warn!(
+                    client_id = ?client_id,
+                    "Skipping WarpToHousingPlot because client is no longer registered"
+                );
+                return true;
+            }
             let mut game_data = game_data.lock();
             let lua = lua.lock();
 
@@ -1708,6 +1722,13 @@ pub(crate) fn handle_server_housing_message(
         } => {
             let mut data = data.lock();
             let mut network = network.lock();
+            if !network.clients.contains_key(client_id) {
+                tracing::warn!(
+                    client_id = ?client_id,
+                    "Skipping WarpToApartmentOutdoor because client is no longer registered"
+                );
+                return true;
+            }
             let mut game_data = game_data.lock();
             let lua = lua.lock();
 

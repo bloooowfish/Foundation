@@ -2645,16 +2645,19 @@ pub async fn server_main_loop(
 
             network.to_remove.append(&mut to_remove);
 
-            for remove_id in network.to_remove.clone() {
+            for remove_id in std::mem::take(&mut network.to_remove) {
                 // remove any actors they had
-                let mut actor_id = None;
-                for (id, (handle, _)) in &mut network.clients {
-                    if *id == remove_id {
-                        actor_id = Some(handle.actor_id);
-                    }
-                }
+                let actor_id = network
+                    .clients
+                    .get(&remove_id)
+                    .map(|(handle, _)| handle.actor_id);
 
                 if let Some(actor_id) = actor_id {
+                    tracing::info!(
+                        client_id = ?remove_id,
+                        actor_id = actor_id.0,
+                        "Removing zone client from server state"
+                    );
                     let mut data = data.lock();
                     // remove them from the instance
                     if let Some(current_instance) = data.find_actor_instance_mut(actor_id) {
@@ -2665,7 +2668,7 @@ pub async fn server_main_loop(
                 network.clients.remove(&remove_id);
             }
 
-            for remove_id in network.to_remove_chat.clone() {
+            for remove_id in std::mem::take(&mut network.to_remove_chat) {
                 network.chat_clients.remove(&remove_id);
             }
         }

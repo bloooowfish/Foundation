@@ -297,13 +297,25 @@ impl NetworkState {
 
             match destination {
                 DestinationNetwork::ZoneClients => {
-                    let handle = &mut self.clients.get_mut(&member.zone_client_id).unwrap().0;
+                    let Some(handle) = self
+                        .clients
+                        .get_mut(&member.zone_client_id)
+                        .map(|c| &mut c.0)
+                    else {
+                        continue;
+                    };
                     if handle.send(message.clone()).is_err() {
                         self.to_remove.push(member.zone_client_id);
                     }
                 }
                 DestinationNetwork::ChatClients => {
-                    let handle = &mut self.chat_clients.get_mut(&member.chat_client_id).unwrap().0;
+                    let Some(handle) = self
+                        .chat_clients
+                        .get_mut(&member.chat_client_id)
+                        .map(|c| &mut c.0)
+                    else {
+                        continue;
+                    };
                     if handle.send(message.clone()).is_err() {
                         self.to_remove_chat.push(member.chat_client_id);
                     }
