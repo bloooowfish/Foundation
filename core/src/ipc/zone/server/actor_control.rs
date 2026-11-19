@@ -885,6 +885,15 @@ pub enum ActorControlCategory {
     #[brw(magic = 1005u32)]
     FinishEstateAppearanceRemodel {},
 
+    /// The server acknowledges the client's request to remove or store an outdoor yard furnishing.
+    #[brw(magic = 1007u32)]
+    OutdoorFurnitureRemovedAck {
+        plot_and_slot: u32,
+        flag: u32,
+        unk3: u32,
+        unk4: u32,
+    },
+
     /// The server acknowledges that an estate appearance item operation was applied.
     #[brw(magic = 1008u32)]
     FinishEstateAppearanceItemOperation {},

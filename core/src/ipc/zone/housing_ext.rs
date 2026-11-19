@@ -239,13 +239,13 @@ pub struct BuildEstateDeed {
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct UpdateAquarium {
     pub furniture_slot: u16,
-    pub mode: u8,
+    pub water_type: u8,
     pub pad0: u8,
-    pub trim_item_id: u32,
-    pub water_param: u16,
+    pub trimming_container: u32,
+    pub trimming_slot: u16,
     pub pad1: u16,
-    pub fish_item_ids: [u32; 4],
-    pub fish_params: [u16; 4],
+    pub fish_containers: [u32; 4],
+    pub fish_slots: [u16; 4],
     pub pad2: u32,
 }
 

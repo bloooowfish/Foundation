@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+use icarus::AquariumFish::AquariumFishSheet;
 use icarus::HousingFurniture::HousingFurnitureSheet;
 use icarus::HousingPreset::HousingPresetSheet;
 use icarus::HousingRenovation::HousingRenovationSheet;
@@ -287,6 +288,7 @@ pub struct HousingCatalog {
     pub striking_dummy_bnpc_by_catalog: HashMap<u16, u32>,
     pub vase_flower_by_row: HashMap<u16, u32>,
     pub vase_flower_rows_by_item: HashMap<u32, Vec<u16>>,
+    pub aquarium_fish_row_by_item: HashMap<u32, u16>,
     pub renovation_names: HashMap<u16, String>,
     pub presets: Vec<DefaultDistrictPreset>,
 }
@@ -403,6 +405,18 @@ impl HousingCatalog {
                     catalog.united_row_by_roof.entry(parts[0]).or_insert(row_id);
                 }
                 catalog.united_parts_by_row.insert(row_id, parts);
+            }
+        }
+
+        if let Some(sheet) = read_sheet_flexible!(AquariumFishSheet, &mut game_data.resource, lang)
+        {
+            for (row_id, row) in (&sheet).into_iter().flatten_subrows() {
+                if row.Item != 0 {
+                    catalog
+                        .aquarium_fish_row_by_item
+                        .entry(row.Item)
+                        .or_insert(row_id as u16);
+                }
             }
         }
 
@@ -643,6 +657,16 @@ impl HousingCatalog {
             .get(&row_id)
             .or_else(|| self.items_by_additional_data.get(&(0x0005_0000 | row_id)))?;
         self.items_by_id.get(&item_id)
+    }
+
+    pub fn aquarium_fish_param_for_item(&self, item_id: u32) -> u16 {
+        if item_id == 0 {
+            return 0;
+        }
+        self.aquarium_fish_row_by_item
+            .get(&item_id)
+            .copied()
+            .unwrap_or((item_id & 0xFFFF) as u16)
     }
 
     pub fn item_for_additional_data(

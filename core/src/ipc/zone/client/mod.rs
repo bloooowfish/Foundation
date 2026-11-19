@@ -623,7 +623,8 @@ pub enum ClientZoneIpcData {
         #[br(map = read_bool_from::<u32>)]
         #[bw(map = write_bool_as::<u32>)]
         spawn_furniture: bool,
-        unk2: [u8; 8], // Zeroes?
+        to_storeroom: u8,
+        unk2: [u8; 7],
     },
     TranslateFurniture {
         /// Which house this affects.

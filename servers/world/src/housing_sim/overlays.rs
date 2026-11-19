@@ -29,6 +29,7 @@ const HOUSING_STRIKING_DUMMY_HEALTH: u32 = 1_000_000_000;
 pub struct HousingOverlayScope {
     pub indoors: bool,
     pub ward_index: u8,
+    pub division: u8,
     pub plot_index: u8,
 }
 
@@ -39,6 +40,7 @@ pub struct HousingOverlayScope {
 pub struct HousingOverlayKey {
     pub indoors: bool,
     pub ward_index: u8,
+    pub division: u8,
     pub plot_index: u8,
     pub slot: u16,
 }
@@ -56,9 +58,8 @@ pub fn tracking_id_for_key(key: HousingOverlayKey) -> u32 {
     if key.indoors {
         key.slot as u32
     } else {
-        ((key.ward_index as u32) << 16)
-            | ((key.plot_index as u32) << 8)
-            | ((key.slot as u32) & 0x00FF)
+        let raw_plot = (key.division & 1) * 30 + (key.plot_index % 30);
+        ((key.ward_index as u32) << 16) | ((raw_plot as u32) << 8) | ((key.slot as u32) & 0x00FF)
     }
 }
 
@@ -86,8 +87,8 @@ fn actor_matches_scope(actor_id: ObjectId, scope: HousingOverlayScope) -> bool {
     if scope.indoors {
         true
     } else {
-        ((tracking_id >> 16) as u8) == scope.ward_index
-            && ((tracking_id >> 8) as u8) == scope.plot_index
+        let raw_plot = (scope.division & 1) * 30 + (scope.plot_index % 30);
+        ((tracking_id >> 16) as u8) == scope.ward_index && ((tracking_id >> 8) as u8) == raw_plot
     }
 }
 
@@ -399,6 +400,7 @@ mod tests {
             key: HousingOverlayKey {
                 indoors: true,
                 ward_index: 0,
+                division: 0,
                 plot_index: 2,
                 slot,
             },
@@ -444,6 +446,7 @@ mod tests {
         let scope = HousingOverlayScope {
             indoors: true,
             ward_index: 0,
+            division: 0,
             plot_index: 2,
         };
 
@@ -501,6 +504,7 @@ mod tests {
         let scope = HousingOverlayScope {
             indoors: true,
             ward_index: 0,
+            division: 0,
             plot_index: 2,
         };
         replace_scope_overlays_inner(&mut instance, &mut network, None, &catalog, scope, &objects);
@@ -534,5 +538,43 @@ mod tests {
             .expect("translated overlay must remain in instance");
         assert_eq!(actor.position().0, new_pos.0);
         assert!((actor.rotation() - new_rot).abs() < 1e-6);
+    }
+
+    #[test]
+    fn outdoor_division_isolation_prevents_tracking_id_and_scope_collision() {
+        let main_key = HousingOverlayKey {
+            indoors: false,
+            ward_index: 2,
+            division: 0,
+            plot_index: 4,
+            slot: 15,
+        };
+        let sub_key = HousingOverlayKey {
+            indoors: false,
+            ward_index: 2,
+            division: 1,
+            plot_index: 4,
+            slot: 15,
+        };
+        assert_ne!(tracking_id_for_key(main_key), tracking_id_for_key(sub_key));
+
+        let main_actor = overlay_object_actor_id(main_key);
+        let sub_actor = overlay_object_actor_id(sub_key);
+        let main_scope = HousingOverlayScope {
+            indoors: false,
+            ward_index: 2,
+            division: 0,
+            plot_index: 4,
+        };
+        let sub_scope = HousingOverlayScope {
+            indoors: false,
+            ward_index: 2,
+            division: 1,
+            plot_index: 4,
+        };
+        assert!(actor_matches_scope(main_actor, main_scope));
+        assert!(!actor_matches_scope(main_actor, sub_scope));
+        assert!(actor_matches_scope(sub_actor, sub_scope));
+        assert!(!actor_matches_scope(sub_actor, main_scope));
     }
 }

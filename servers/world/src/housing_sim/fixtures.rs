@@ -8,10 +8,15 @@ use serde_derive::{Deserialize, Serialize};
 
 use super::containers::{
     MAX_INDOOR_PLACED_SLOTS, flat_slot_for_placed_container, indoor_slot_capacity,
-    is_interior_placed_container,
+    is_exterior_placed_container, is_interior_placed_container, outdoor_slot_capacity,
 };
 use super::db::{FurnitureObjectData, HousingEstateRow, HousingFurnitureRow, plot_state_for_row};
 use super::gamedata_ext::HousingCatalog;
+
+/// Computes the `0..59` ward-wide raw plot index (`division * 30 + plot_index`).
+pub fn raw_plot_index(estate: &HousingEstateRow) -> u8 {
+    (estate.division.clamp(0, 1) as u8) * 30 + (estate.plot_index.clamp(0, 29) as u8)
+}
 
 pub const DEFAULT_MINIMAL_WALL: u32 = 66111; // Pure White Interior Wall
 pub const DEFAULT_MINIMAL_FLOOR: u32 = 65591; // Light Wood Flooring
@@ -120,7 +125,7 @@ impl StoredHouseExterior {
 
         let ext = self.to_packet_exterior();
         HousingExteriorAppearanceUpdate {
-            plot_index: (estate.plot_index.clamp(0, 29)) as u8,
+            plot_index: raw_plot_index(estate),
             pad0: [0; 7],
             size_or_type: estate.plot_size.clamp(0, 2) as u8,
             status: plot_state_for_row(estate, &ext),
@@ -422,14 +427,14 @@ where
         let Some(item_id) = resolve_item_id(src_c, src_s) else {
             continue;
         };
-        if idx == 8 || catalog.united_parts_for_item(item_id).is_some() {
+        if idx == 0 {
             if let Some(parts) = catalog.united_parts_for_item(item_id) {
                 exterior.apply_united_parts(parts);
                 changed = true;
                 break;
             }
         } else if let Some(ext_part_id) = catalog.exterior_part_id_for_item(item_id)
-            && exterior.set_part_id(idx, ext_part_id)
+            && exterior.set_part_id(idx - 1, ext_part_id)
         {
             changed = true;
         }
@@ -636,12 +641,19 @@ pub fn build_housing_object_data_value_sets(
 
         if let Ok(obj) = serde_json::from_str::<FurnitureObjectData>(&row.object_data_json) {
             if let Some(aq) = obj.aquarium {
-                pkt.value_count = 3;
                 pkt.values[0] = aq.water_param;
                 pkt.values[1] = aq.fish_params[0];
                 pkt.values[2] = aq.fish_params[1];
                 pkt.values[3] = aq.fish_params[2];
+                pkt.values[4] = aq.fish_params[3];
                 pkt.param_a[0] = aq.trim_item_id as u8;
+                let mut count = 1usize;
+                for i in 0..4 {
+                    if aq.fish_params[i] != 0 || aq.fish_item_ids[i] != 0 {
+                        count = i + 2;
+                    }
+                }
+                pkt.value_count = count.min(8) as u8;
             } else if !obj.values.is_empty() {
                 let count = obj.values.len().min(8);
                 pkt.value_count = count as u8;
@@ -671,9 +683,16 @@ pub fn build_indoor_furniture_lists(
     house_id: HouseId,
     plot_size: PlotSize,
     is_apartment: bool,
+    is_fc: bool,
     rows: &[HousingFurnitureRow],
 ) -> Vec<FurnitureList> {
-    let estate_type = kawari::common::EstateType::default();
+    let estate_type = if is_apartment {
+        kawari::common::EstateType::ApartmentRoom
+    } else if is_fc {
+        kawari::common::EstateType::FreeCompanyEstate
+    } else {
+        kawari::common::EstateType::PersonalEstate
+    };
 
     let capacity = indoor_slot_capacity(plot_size, is_apartment).min(MAX_INDOOR_PLACED_SLOTS);
     let mut max_slot_used = 0usize;
@@ -722,40 +741,80 @@ pub fn build_indoor_furniture_lists(
         .collect()
 }
 
-/// Builds 1 outdoor `FurnitureList` (`unk2 = 0`, matching retail/Kawari ward init) for an estate plot.
-pub fn build_outdoor_furniture_list(
-    estate: &HousingEstateRow,
-    rows: &[HousingFurnitureRow],
-) -> FurnitureList {
-    let mut house_id = HouseId::from(estate.house_id as u64);
-    house_id.room_number = 0;
-    let mut furniture = vec![Furniture::default(); Furniture::COUNT];
+/// Builds 15 ward-wide outdoor `FurnitureList` chunks (`15 * 100` flat slots, `unk2 = 0`, `EstateType::Ward`)
+/// for `division` only, placing each plot's yard furniture at its `40/60/80` cumulative stride offset.
+pub fn build_ward_outdoor_furniture_lists(
+    territory_type_id: u16,
+    world_id: u16,
+    ward_index: u8,
+    division: u8,
+    estates_with_rows: &[(&HousingEstateRow, Vec<HousingFurnitureRow>)],
+) -> Vec<FurnitureList> {
+    const CHUNK_COUNT: usize = 15;
+    let target_div = division.clamp(0, 1);
+    let mut dense = vec![Furniture::default(); CHUNK_COUNT * Furniture::COUNT];
 
-    for row in rows {
-        let slot = row.slot as usize;
-        if slot >= 50
-            || row.container_type
-                != kawari::common::ContainerType::HousingExteriorPlacedItems as i32
-        {
+    for (estate, rows) in estates_with_rows {
+        if estate.is_apartment || estate.division.clamp(0, 1) as u8 != target_div {
             continue;
         }
-        furniture[slot] = Furniture {
-            id: row.catalog_id.max(0) as u16,
-            id2: (row.material_item_key.max(0) as u16) as i16,
-            stain: row.stain.clamp(0, u8::MAX as i32) as u8,
-            rotation: row.rotation,
-            position: kawari::common::Position(glam::Vec3A::new(row.pos_x, row.pos_y, row.pos_z)),
+        let Ok(plot_idx) = u8::try_from(estate.plot_index) else {
+            continue;
         };
+        let Some(base) =
+            super::plots::outdoor_plot_base_offset(territory_type_id, target_div, plot_idx)
+        else {
+            continue;
+        };
+        let plot_size = PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default();
+        let cap = outdoor_slot_capacity(plot_size);
+
+        for row in rows {
+            let Some(ctype) = super::containers::container_from_i32(row.container_type) else {
+                continue;
+            };
+            if !is_exterior_placed_container(ctype) {
+                continue;
+            }
+            let Some(flat_slot) = flat_slot_for_placed_container(ctype, row.slot as u16) else {
+                continue;
+            };
+            let rel = flat_slot as usize;
+            let dst = base + rel;
+            if rel >= cap || dst >= dense.len() {
+                continue;
+            }
+            dense[dst] = Furniture {
+                id: row.catalog_id.max(0) as u16,
+                id2: (row.material_item_key.max(0) as u16) as i16,
+                stain: row.stain.clamp(0, u8::MAX as i32) as u8,
+                rotation: row.rotation,
+                position: kawari::common::Position(glam::Vec3A::new(
+                    row.pos_x, row.pos_y, row.pos_z,
+                )),
+            };
+        }
     }
 
-    FurnitureList {
-        id: house_id,
-        estate_type: kawari::common::EstateType::Ward,
-        index: 0,
-        count: 1,
-        unk2: 0,
-        furniture,
-    }
+    let id = HouseId {
+        ward_index,
+        territory_type_id,
+        world_id,
+        ..Default::default()
+    };
+
+    dense
+        .chunks(Furniture::COUNT)
+        .enumerate()
+        .map(|(index, chunk)| FurnitureList {
+            id,
+            estate_type: kawari::common::EstateType::Ward,
+            index: index as u8,
+            count: CHUNK_COUNT as u8,
+            unk2: 0,
+            furniture: chunk.to_vec(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -780,8 +839,12 @@ mod tests {
             rotation: 0.5,
             ..Default::default()
         };
-        let lists = build_indoor_furniture_lists(house_id, PlotSize::Large, false, &[row]);
+        let lists = build_indoor_furniture_lists(house_id, PlotSize::Large, false, false, &[row]);
         assert_eq!(lists.len(), 6);
+        assert!(matches!(
+            lists[0].estate_type,
+            kawari::common::EstateType::PersonalEstate
+        ));
         assert_eq!(lists[5].count, 6);
         assert_eq!(lists[5].unk2, 100);
         assert_eq!(lists[5].furniture[92].id, 777);
@@ -921,11 +984,12 @@ mod tests {
         assert_eq!(sets[0].furniture_index, 0);
         assert_eq!(sets[594].furniture_index, 594);
         assert_eq!(sets[10].furniture_index, 10);
-        assert_eq!(sets[10].value_count, 3);
+        assert_eq!(sets[10].value_count, 5);
         assert_eq!(sets[10].values[0], 4);
         assert_eq!(sets[10].values[1], 11);
         assert_eq!(sets[10].values[2], 22);
         assert_eq!(sets[10].values[3], 33);
+        assert_eq!(sets[10].values[4], 44);
         assert_eq!(sets[10].param_a[0], 21);
     }
 
@@ -987,5 +1051,180 @@ mod tests {
                 .apartment_description
                 .is_char_boundary(entries[0].apartment_description.len())
         );
+    }
+
+    #[test]
+    fn apply_exterior_remodel_op_maps_slot_0_united_and_1_to_8_parts() {
+        let catalog = HousingCatalog::mock_for_tests();
+        let mut ext = StoredHouseExterior::default();
+
+        // Slots 1..=8 map to exterior parts 0..=7 (Roof = part_idx 0, Walls = part_idx 1).
+        let op_parts = ExteriorRemodelItemOperation {
+            source_containers: [9999, 0, 0, 9999, 9999, 9999, 9999, 9999, 9999],
+            source_slots: [
+                0xFFFF, 10, 11, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+            ],
+            ..Default::default()
+        };
+        assert!(apply_exterior_remodel_op(
+            &mut ext,
+            &catalog,
+            &op_parts,
+            |_c, s| match s {
+                10 => Some(6898), // Glade Cottage Roof (additional_data = 24)
+                11 => Some(6900), // Glade Cottage Wall (additional_data = 25)
+                _ => None,
+            }
+        ));
+        assert_eq!(ext.roof_id, 24);
+        assert_eq!(ext.walls_id, 25);
+
+        // Slot 0 maps to United Exterior and applies all 8 parts.
+        let op_united = ExteriorRemodelItemOperation {
+            source_containers: [0, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999],
+            source_slots: [
+                12, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+            ],
+            ..Default::default()
+        };
+        assert!(apply_exterior_remodel_op(
+            &mut ext,
+            &catalog,
+            &op_united,
+            |_c, s| match s {
+                12 => Some(20701), // Shirogane Castle Walls
+                _ => None,
+            }
+        ));
+        assert_eq!(ext.part_ids(), [501, 502, 503, 504, 505, 506, 507, 508]);
+    }
+
+    #[test]
+    fn build_ward_outdoor_furniture_lists_emits_15_chunks_filters_division_and_supports_page_2() {
+        let territory = 340u16; // Lavender Beds
+        let plot0_size = super::super::plots::plot_spec(territory, 0, 0)
+            .expect("plot 0 spec")
+            .size;
+        let plot2_offset =
+            super::super::plots::outdoor_plot_base_offset(territory, 0, 2).expect("plot 2 offset");
+        let plot2_size = super::super::plots::plot_spec(territory, 0, 2)
+            .expect("plot 2 spec")
+            .size;
+
+        let estate_main_p0 = HousingEstateRow {
+            land_ident: 34000001,
+            territory_type_id: territory as i32,
+            ward_index: 0,
+            division: 0,
+            plot_index: 0,
+            plot_size: plot0_size as i32,
+            ..Default::default()
+        };
+        let estate_main_p2 = HousingEstateRow {
+            land_ident: 34000003,
+            territory_type_id: territory as i32,
+            ward_index: 0,
+            division: 0,
+            plot_index: 2,
+            plot_size: plot2_size as i32,
+            ..Default::default()
+        };
+        let estate_sub_p0 = HousingEstateRow {
+            land_ident: 34000031,
+            territory_type_id: territory as i32,
+            ward_index: 0,
+            division: 1,
+            plot_index: 0,
+            plot_size: PlotSize::Large as i32,
+            ..Default::default()
+        };
+
+        let row_p0 = HousingFurnitureRow {
+            land_ident: estate_main_p0.land_ident,
+            container_type: kawari::common::ContainerType::HousingExteriorPlacedItems as i32,
+            slot: 3,
+            catalog_id: 111,
+            placed: true,
+            ..Default::default()
+        };
+        let row_p2_page2 = HousingFurnitureRow {
+            land_ident: estate_main_p2.land_ident,
+            container_type: kawari::common::ContainerType::HousingExteriorPlacedItems2 as i32,
+            slot: 5, // flat_slot = 45 (only valid for Medium=60 / Large=80)
+            catalog_id: 222,
+            placed: true,
+            ..Default::default()
+        };
+        // Wait: plot 2 in Lavender Beds might be Small (cap 40) or Medium (cap 60); also test Plot 28 (Large = 80).
+        let large_plot = super::super::plots::canonical_plot_for_district_and_size(
+            territory,
+            0,
+            PlotSize::Large,
+        )
+        .expect("large plot in Lavender Beds");
+        let large_offset = super::super::plots::outdoor_plot_base_offset(territory, 0, large_plot)
+            .expect("large offset");
+        let estate_main_large = HousingEstateRow {
+            land_ident: 34000099,
+            territory_type_id: territory as i32,
+            ward_index: 0,
+            division: 0,
+            plot_index: large_plot as i32,
+            plot_size: PlotSize::Large as i32,
+            ..Default::default()
+        };
+        let row_large_page2 = HousingFurnitureRow {
+            land_ident: estate_main_large.land_ident,
+            container_type: kawari::common::ContainerType::HousingExteriorPlacedItems2 as i32,
+            slot: 5, // flat_slot = 45 < 80
+            catalog_id: 333,
+            placed: true,
+            ..Default::default()
+        };
+        let row_sub_p0 = HousingFurnitureRow {
+            land_ident: estate_sub_p0.land_ident,
+            container_type: kawari::common::ContainerType::HousingExteriorPlacedItems as i32,
+            slot: 0,
+            catalog_id: 999,
+            placed: true,
+            ..Default::default()
+        };
+
+        let mut row_p2_page1 = row_p2_page2;
+        row_p2_page1.container_type =
+            kawari::common::ContainerType::HousingExteriorPlacedItems as i32;
+        row_p2_page1.slot = 2;
+
+        let lists = build_ward_outdoor_furniture_lists(
+            territory,
+            79,
+            0,
+            0,
+            &[
+                (&estate_main_p0, vec![row_p0]),
+                (&estate_main_p2, vec![row_p2_page1]),
+                (&estate_main_large, vec![row_large_page2]),
+                (&estate_sub_p0, vec![row_sub_p0]),
+            ],
+        );
+
+        assert_eq!(lists.len(), 15);
+        for (idx, list) in lists.iter().enumerate() {
+            assert_eq!(list.index, idx as u8);
+            assert_eq!(list.count, 15);
+            assert_eq!(list.unk2, 0);
+            assert!(matches!(list.estate_type, kawari::common::EstateType::Ward));
+            assert_eq!(list.furniture.len(), 100);
+        }
+
+        // Main plot 0 slot 3 is not overwritten by Sub plot 0 slot 0.
+        assert_eq!(lists[0].furniture[0].id, 0);
+        assert_eq!(lists[0].furniture[3].id, 111);
+
+        let p2_idx = plot2_offset + 2;
+        assert_eq!(lists[p2_idx / 100].furniture[p2_idx % 100].id, 222);
+
+        let large_idx = large_offset + 45;
+        assert_eq!(lists[large_idx / 100].furniture[large_idx % 100].id, 333);
     }
 }

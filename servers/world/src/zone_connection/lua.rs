@@ -783,7 +783,7 @@ impl ZoneConnection {
 
                         let Some(dst_slot) = self.player_data.inventory.get_item_mut(
                             dye_information.target_container,
-                            dye_information.target_slot as u16,
+                            dye_information.target_slot,
                         ) else {
                             return true;
                         };

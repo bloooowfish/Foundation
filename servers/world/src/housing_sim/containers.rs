@@ -2,12 +2,27 @@ use kawari::common::{ContainerType, TerritoryIntendedUse};
 use kawari::ipc::zone::PlotSize;
 
 pub const SLOTS_PER_HOUSING_PAGE: u16 = 50;
+pub const SLOTS_PER_EXTERIOR_PAGE: u16 = 40;
 pub const MAX_INDOOR_PLACED_PAGES: usize = 12;
 pub const MAX_INDOOR_STOREROOM_PAGES: usize = 12;
+pub const MAX_EXTERIOR_PLACED_PAGES: usize = 2;
+pub const MAX_EXTERIOR_STOREROOM_PAGES: usize = 2;
 pub const MAX_INDOOR_PLACED_SLOTS: usize =
     MAX_INDOOR_PLACED_PAGES * SLOTS_PER_HOUSING_PAGE as usize;
-pub const MAX_EXTERIOR_PLACED_SLOTS: usize = SLOTS_PER_HOUSING_PAGE as usize;
-pub const MAX_EXTERIOR_STOREROOM_SLOTS: usize = SLOTS_PER_HOUSING_PAGE as usize;
+pub const MAX_EXTERIOR_PLACED_SLOTS: usize =
+    MAX_EXTERIOR_PLACED_PAGES * SLOTS_PER_EXTERIOR_PAGE as usize;
+pub const MAX_EXTERIOR_STOREROOM_SLOTS: usize =
+    MAX_EXTERIOR_STOREROOM_PAGES * SLOTS_PER_EXTERIOR_PAGE as usize;
+
+pub const EXTERIOR_PLACED_CONTAINERS: [ContainerType; MAX_EXTERIOR_PLACED_PAGES] = [
+    ContainerType::HousingExteriorPlacedItems,
+    ContainerType::HousingExteriorPlacedItems2,
+];
+
+pub const EXTERIOR_STOREROOM_CONTAINERS: [ContainerType; MAX_EXTERIOR_STOREROOM_PAGES] = [
+    ContainerType::HousingExteriorStoreroom,
+    ContainerType::HousingExteriorStoreroom2,
+];
 
 pub const INTERIOR_PLACED_CONTAINERS: [ContainerType; MAX_INDOOR_PLACED_PAGES] = [
     ContainerType::HousingInteriorPlacedItems1,
@@ -54,9 +69,9 @@ pub fn indoor_slot_capacity(plot_size: PlotSize, is_apartment: bool) -> usize {
 /// Returns the outdoor placed capacity for the given plot size.
 pub fn outdoor_slot_capacity(plot_size: PlotSize) -> usize {
     match plot_size {
-        PlotSize::Small => 20,
-        PlotSize::Medium => 30,
-        PlotSize::Large => 40,
+        PlotSize::Small => 40,
+        PlotSize::Medium => 60,
+        PlotSize::Large => MAX_EXTERIOR_PLACED_SLOTS,
     }
 }
 
@@ -70,13 +85,17 @@ pub fn indoor_container_for_flat_slot(flat_slot: u16) -> Option<(ContainerType, 
         .map(|container| (container, slot))
 }
 
-/// Converts a `(ContainerType, page_slot)` to a flat index (`0..600` indoors, `0..50` outdoors).
+/// Converts a `(ContainerType, page_slot)` to a flat index (`0..600` indoors, `0..80` outdoors).
 pub fn flat_slot_for_placed_container(container: ContainerType, slot: u16) -> Option<u16> {
+    if let Some(page) = EXTERIOR_PLACED_CONTAINERS
+        .iter()
+        .position(|&c| c == container)
+    {
+        return (slot < SLOTS_PER_EXTERIOR_PAGE)
+            .then_some((page as u16) * SLOTS_PER_EXTERIOR_PAGE + slot);
+    }
     if slot >= SLOTS_PER_HOUSING_PAGE {
         return None;
-    }
-    if container == ContainerType::HousingExteriorPlacedItems {
-        return Some(slot);
     }
     INTERIOR_PLACED_CONTAINERS
         .iter()
@@ -91,10 +110,13 @@ pub fn placed_container_for_flat_slot(
 ) -> Option<(ContainerType, u16)> {
     if indoors {
         indoor_container_for_flat_slot(flat_slot)
-    } else if flat_slot < SLOTS_PER_HOUSING_PAGE {
-        Some((ContainerType::HousingExteriorPlacedItems, flat_slot))
     } else {
-        None
+        let page = (flat_slot / SLOTS_PER_EXTERIOR_PAGE) as usize;
+        let slot = flat_slot % SLOTS_PER_EXTERIOR_PAGE;
+        EXTERIOR_PLACED_CONTAINERS
+            .get(page)
+            .copied()
+            .map(|container| (container, slot))
     }
 }
 
@@ -108,16 +130,33 @@ pub fn is_interior_storeroom_container(container: ContainerType) -> bool {
     INTERIOR_STOREROOM_CONTAINERS.contains(&container)
 }
 
+/// Returns whether a container holds outdoor placed furnishings.
+pub fn is_exterior_placed_container(container: ContainerType) -> bool {
+    EXTERIOR_PLACED_CONTAINERS.contains(&container)
+}
+
+/// Returns whether a container holds outdoor storeroom items.
+pub fn is_exterior_storeroom_container(container: ContainerType) -> bool {
+    EXTERIOR_STOREROOM_CONTAINERS.contains(&container)
+}
+
+/// Returns the number of slots per page for a housing storeroom container.
+pub fn storeroom_slots_per_page(container: ContainerType) -> u16 {
+    if is_exterior_storeroom_container(container) {
+        SLOTS_PER_EXTERIOR_PAGE
+    } else {
+        SLOTS_PER_HOUSING_PAGE
+    }
+}
+
 /// Returns whether a container belongs to housing placed furniture (indoor or outdoor).
 pub fn is_placed_furniture_container(container: ContainerType) -> bool {
-    container == ContainerType::HousingExteriorPlacedItems
-        || is_interior_placed_container(container)
+    is_exterior_placed_container(container) || is_interior_placed_container(container)
 }
 
 /// Returns whether a container belongs to housing storeroom storage (indoor or outdoor).
 pub fn is_storeroom_container(container: ContainerType) -> bool {
-    container == ContainerType::HousingExteriorStoreroom
-        || is_interior_storeroom_container(container)
+    is_exterior_storeroom_container(container) || is_interior_storeroom_container(container)
 }
 
 /// Returns whether a container belongs to housing appearance/remodeling fixtures.
@@ -146,7 +185,10 @@ pub fn placed_container_ids_for_scope(indoors: bool) -> Vec<i32> {
             .map(|c| *c as i32)
             .collect()
     } else {
-        vec![ContainerType::HousingExteriorPlacedItems as i32]
+        EXTERIOR_PLACED_CONTAINERS
+            .iter()
+            .map(|c| *c as i32)
+            .collect()
     }
 }
 
@@ -156,12 +198,8 @@ pub fn containers_for_request(
     storeroom: bool,
 ) -> Vec<ContainerType> {
     match (intended_use, storeroom) {
-        (TerritoryIntendedUse::HousingOutdoor, false) => {
-            vec![ContainerType::HousingExteriorPlacedItems]
-        }
-        (TerritoryIntendedUse::HousingOutdoor, true) => {
-            vec![ContainerType::HousingExteriorStoreroom]
-        }
+        (TerritoryIntendedUse::HousingOutdoor, false) => EXTERIOR_PLACED_CONTAINERS.to_vec(),
+        (TerritoryIntendedUse::HousingOutdoor, true) => EXTERIOR_STOREROOM_CONTAINERS.to_vec(),
         (TerritoryIntendedUse::HousingIndoor, false) => INTERIOR_PLACED_CONTAINERS.to_vec(),
         (TerritoryIntendedUse::HousingIndoor, true) => INTERIOR_STOREROOM_CONTAINERS.to_vec(),
         _ => Vec::new(),
@@ -193,6 +231,7 @@ pub fn container_from_u16(raw: u16) -> Option<ContainerType> {
         25012 => Some(ContainerType::HousingInteriorPlacedItems10),
         25013 => Some(ContainerType::HousingInteriorPlacedItems11),
         25014 => Some(ContainerType::HousingInteriorPlacedItems12),
+        25200 => Some(ContainerType::HousingExteriorPlacedItems2),
         27000 => Some(ContainerType::HousingExteriorStoreroom),
         27001 => Some(ContainerType::HousingInteriorStoreroom1),
         27002 => Some(ContainerType::HousingInteriorStoreroom2),
@@ -206,6 +245,7 @@ pub fn container_from_u16(raw: u16) -> Option<ContainerType> {
         27010 => Some(ContainerType::HousingInteriorStoreroom10),
         27011 => Some(ContainerType::HousingInteriorStoreroom11),
         27012 => Some(ContainerType::HousingInteriorStoreroom12),
+        27200 => Some(ContainerType::HousingExteriorStoreroom2),
         _ => None,
     }
 }
@@ -230,5 +270,44 @@ mod tests {
             assert_eq!(roundtrip, slot);
         }
         assert!(placed_container_for_flat_slot(true, 600).is_none());
+    }
+
+    #[test]
+    fn outdoor_containers_map_two_40_slot_pages_and_40_60_80_capacities() {
+        assert_eq!(outdoor_slot_capacity(PlotSize::Small), 40);
+        assert_eq!(outdoor_slot_capacity(PlotSize::Medium), 60);
+        assert_eq!(outdoor_slot_capacity(PlotSize::Large), 80);
+
+        for slot in [0u16, 39, 40, 59, 60, 79] {
+            let (container, page_slot) =
+                placed_container_for_flat_slot(false, slot).expect("slot 0..80 must map");
+            assert!(page_slot < 40);
+            let expected_container = if slot < 40 {
+                ContainerType::HousingExteriorPlacedItems
+            } else {
+                ContainerType::HousingExteriorPlacedItems2
+            };
+            assert_eq!(container, expected_container);
+            assert_eq!(
+                flat_slot_for_placed_container(container, page_slot),
+                Some(slot)
+            );
+        }
+        assert!(placed_container_for_flat_slot(false, 80).is_none());
+        assert!(
+            flat_slot_for_placed_container(ContainerType::HousingExteriorPlacedItems, 40).is_none()
+        );
+        assert!(
+            flat_slot_for_placed_container(ContainerType::HousingExteriorPlacedItems2, 40)
+                .is_none()
+        );
+        assert_eq!(
+            container_from_u16(25200),
+            Some(ContainerType::HousingExteriorPlacedItems2)
+        );
+        assert_eq!(
+            container_from_u16(27200),
+            Some(ContainerType::HousingExteriorStoreroom2)
+        );
     }
 }

@@ -13,7 +13,9 @@ use kawari::common::{
 };
 
 use kawari::config::get_config;
-use kawari_world::inventory::{Item, MAX_LARGE_STORAGE, Storage, get_next_free_slot};
+use kawari_world::inventory::{
+    Item, MAX_EXTERIOR_STORAGE, MAX_LARGE_STORAGE, Storage, get_next_free_slot,
+};
 use physis::equipment::EquipSlot;
 
 use kawari::ipc::chat::ClientChatIpcData;
@@ -3794,11 +3796,13 @@ async fn process_packet(
                             slot,
                             position,
                             rotation,
-                            spawn_furniture,
+                            spawn_furniture: _,
+                            to_storeroom,
                             plot_index,
                             ..
                         } => {
                             let intended_use = lua_player.zone_data.intended_use;
+                            let move_to_storeroom = *to_storeroom != 0;
 
                             // TODO: Also reject if they're not the owner/shared tenant
                             if !in_housing_area(intended_use) {
@@ -3814,7 +3818,7 @@ async fn process_packet(
                                 slot,
                                 position,
                                 rotation,
-                                spawn_furniture,
+                                move_to_storeroom,
                             );
 
                             let transfer_item = if let Some(the_item) =
@@ -3844,7 +3848,10 @@ async fn process_packet(
                             let desired_pages = connection
                                 .player_data
                                 .house_inventory
-                                .get_desired_pages_from_intendeduse(intended_use, !spawn_furniture);
+                                .get_desired_pages_from_intendeduse(
+                                    intended_use,
+                                    move_to_storeroom,
+                                );
 
                             let Some(result) = connection
                                 .player_data
@@ -3896,7 +3903,7 @@ async fn process_packet(
                                 .await;
 
                             // If the client opted to move furniture to the storeroom, there's nothing further to do here.
-                            if !spawn_furniture {
+                            if move_to_storeroom {
                                 continue;
                             }
 
@@ -3989,8 +3996,10 @@ async fn process_packet(
                                     continue;
                                 }
                             } else {
-                                if *slot < 50 {
+                                if *slot < 40 {
                                     storage_id = ContainerType::HousingExteriorPlacedItems;
+                                } else if *slot < 80 {
+                                    storage_id = ContainerType::HousingExteriorPlacedItems2;
                                 } else {
                                     tracing::warn!(
                                         "Client tried to move furniture beyond the bounds of current housing limits! Rejecting request!"
@@ -4016,10 +4025,15 @@ async fn process_packet(
                                 .await;
 
                             // This ack doesn't need to be networked
+                            let page_size = if indoors {
+                                MAX_LARGE_STORAGE
+                            } else {
+                                MAX_EXTERIOR_STORAGE
+                            } as u16;
                             connection
                                 .actor_control_self(ActorControlCategory::FurnitureTranslatedAck {
                                     storage_id,
-                                    slot: (*slot % MAX_LARGE_STORAGE as u16) as u32,
+                                    slot: (*slot % page_size) as u32,
                                     plot_number: if !house_id.unit.apartment_flag {
                                         house_id.unit.apartment_division_plot_index as u16
                                     } else {

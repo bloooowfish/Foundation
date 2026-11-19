@@ -801,10 +801,15 @@ pub fn prepare_apply_layout_with_existing(
                 extra_properties: extra_props,
             };
 
+            let Some((ctype, slot_in_page)) =
+                super::containers::placed_container_for_flat_slot(false, next_slot)
+            else {
+                break;
+            };
             furniture_rows.push(HousingFurnitureRow {
                 land_ident: estate.land_ident,
-                container_type: ContainerType::HousingExteriorPlacedItems as i32,
-                slot: next_slot as i32,
+                container_type: ctype as i32,
+                slot: slot_in_page as i32,
                 item_id: meta.item_id as i32,
                 catalog_id: cat_id as i32,
                 material_item_key: 0,
@@ -1025,7 +1030,11 @@ fn export_scope_furniture(
                     })
                     .flatten()?
             } else {
-                (ctype == ContainerType::HousingExteriorPlacedItems).then_some(row.slot as u16)?
+                super::containers::is_exterior_placed_container(ctype)
+                    .then(|| {
+                        super::containers::flat_slot_for_placed_container(ctype, row.slot as u16)
+                    })
+                    .flatten()?
             };
             let meta: FurnitureRemakeMeta =
                 serde_json::from_str(&row.remake_meta_json).unwrap_or_default();

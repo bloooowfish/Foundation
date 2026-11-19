@@ -26,9 +26,10 @@ use crate::{Event, EventHandler, GameData, ZoneConnection};
 
 use super::commands::try_handle_housing_chat_command;
 use super::containers::{
-    INTERIOR_STOREROOM_CONTAINERS, SLOTS_PER_HOUSING_PAGE, container_from_i32, container_from_u16,
-    flat_slot_for_placed_container, is_appearance_container, is_housing_container,
-    is_storeroom_container, placed_container_for_flat_slot,
+    EXTERIOR_STOREROOM_CONTAINERS, INTERIOR_STOREROOM_CONTAINERS, container_from_i32,
+    container_from_u16, flat_slot_for_placed_container, is_appearance_container,
+    is_housing_container, is_storeroom_container, placed_container_for_flat_slot,
+    storeroom_slots_per_page,
 };
 use super::db::{
     AquariumObjectState, FurnitureObjectData, HousingEstateRow, HousingFurnitureRow,
@@ -39,16 +40,18 @@ use super::db::{
 };
 use super::fixtures::{
     StoredHouseExterior, StoredHouseInterior, apply_exterior_remodel_op, apply_interior_remodel_op,
+    build_housing_object_data_value_sets, raw_plot_index,
 };
 use super::flows::{
     build_selection_from_row, complete_deferred_indoor_tail_on_remodel, connection_catalog,
     ensure_local_apartment_estate, ensure_local_plot_estate, execute_housing_reload,
-    give_sample_kit_to_connection, mutate_synced_indoor_slot, patch_synced_indoor_slot,
-    publish_session_snapshot, push_indoor_live_refresh, rebuild_house_inventory_from_db,
-    remove_synced_indoor_slot, send_apartment_list_from_db, send_housing_placard_info,
-    send_housing_ward_info, send_owned_housing, sync_current_overlays_for_connection,
-    target_indoor_territory_for_estate, unlock_online_connection, warp_into_estate_interior,
-    warp_to_apartment_outdoor, warp_to_estate_outdoor,
+    give_sample_kit_to_connection, mutate_synced_indoor_slot, patch_synced_indoor_meta,
+    patch_synced_indoor_slot, publish_session_snapshot, push_indoor_live_refresh,
+    rebuild_house_inventory_from_db, remove_synced_indoor_slot, send_apartment_list_from_db,
+    send_housing_placard_info, send_housing_ward_info, send_owned_housing,
+    sync_current_overlays_for_connection, target_indoor_territory_for_estate,
+    unlock_online_connection, warp_into_estate_interior, warp_to_apartment_outdoor,
+    warp_to_estate_outdoor,
 };
 use super::gamedata_ext::cached_housing_catalog;
 use super::overlays::{
@@ -174,7 +177,8 @@ pub async fn try_handle_client_ipc(
             slot,
             position,
             rotation,
-            spawn_furniture,
+            spawn_furniture: _,
+            to_storeroom,
             unk2: _,
         } => {
             handle_place_furniture(
@@ -183,7 +187,7 @@ pub async fn try_handle_client_ipc(
                 *slot,
                 *position,
                 *rotation,
-                *spawn_furniture,
+                *to_storeroom != 0,
             )
             .await
         }
@@ -366,7 +370,6 @@ async fn handle_client_trigger(
                     }
                 };
                 if let Some(est) = updated {
-                    push_indoor_live_refresh(connection, &est).await;
                     connection
                         .actor_control_self(ActorControlCategory::InteriorLightLevel {
                             unk1: 0,
@@ -374,6 +377,7 @@ async fn handle_client_trigger(
                             unk2: u32::from(ssao),
                         })
                         .await;
+                    patch_synced_indoor_meta(connection, &est);
                 }
             }
             true
@@ -507,17 +511,8 @@ async fn handle_client_trigger(
             container_index,
             unk4: _,
         } => {
-            let pos = connection.player_data.volatile.position;
-            let rot = connection.player_data.volatile.rotation as f32;
-            handle_place_furniture(
-                connection,
-                *container_type,
-                *container_index,
-                pos,
-                rot,
-                true,
-            )
-            .await
+            handle_preview_furniture_from_storeroom(connection, *container_type, *container_index)
+                .await
         }
         ClientTriggerCommand::MoveHousingItemToInventory {
             house_id: _,
@@ -579,13 +574,92 @@ fn sanitize_transform(position: Position, rotation: f32) -> (Position, f32) {
     )
 }
 
+async fn handle_preview_furniture_from_storeroom(
+    connection: &mut ZoneConnection,
+    src_container: ContainerType,
+    src_slot: u16,
+) -> bool {
+    let zone_id = connection.player_data.volatile.zone_id as u16;
+    let indoors = is_house_interior_territory(zone_id) || is_apartment_territory(zone_id);
+    let Some(estate) = load_active_estate(connection) else {
+        return true;
+    };
+    let Some(src_item) = connection
+        .player_data
+        .house_inventory
+        .get_item(src_container, src_slot)
+    else {
+        return true;
+    };
+    if src_item.item_id == 0 {
+        return true;
+    }
+
+    let catalog = connection_catalog(connection);
+    let Some(cat_id) = catalog.furniture_catalog_id(src_item.item_id, indoors) else {
+        return true;
+    };
+
+    let material_item_key = if indoors {
+        let mut db = connection.database.lock();
+        super::db::list_furniture_for_estate(db.connection_mut(), estate.land_ident, None)
+            .ok()
+            .and_then(|rows| {
+                rows.into_iter()
+                    .find(|r| r.container_type == src_container as i32 && r.slot == src_slot as i32)
+            })
+            .map(|r| r.material_item_key.max(0) as u16)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let rotation = connection.player_data.volatile.rotation as f32;
+    let position = connection.player_data.volatile.position;
+    if indoors {
+        connection
+            .send_ipc_self(ServerZoneIpcSegment::new(
+                ServerZoneIpcData::InteriorFurniturePlaced {
+                    storage_id: src_container,
+                    slot: src_slot,
+                    item_id: cat_id,
+                    unk1: material_item_key,
+                    stain: src_item.stains[0],
+                    unk2: [0; 3],
+                    rotation,
+                    position,
+                    unk3: [0; 4],
+                },
+            ))
+            .await;
+    } else {
+        connection
+            .send_ipc_self(ServerZoneIpcSegment::new(
+                ServerZoneIpcData::ExteriorFurniturePlaced {
+                    plot_index: 0xFF,
+                    slot: 0xFF,
+                    unk1: [0; 2],
+                    item_id: cat_id,
+                    unk2: 0,
+                    stain: src_item.stains[0],
+                    unk3: [0; 3],
+                    rotation,
+                    position,
+                    unk4: 0,
+                },
+            ))
+            .await;
+    }
+    true
+}
+
 async fn handle_place_furniture(
     connection: &mut ZoneConnection,
     src_container: ContainerType,
     src_slot: u16,
     position: Position,
     rotation: f32,
-    spawn_furniture: bool,
+    to_storeroom: bool,
 ) -> bool {
     let (position, rotation) = sanitize_transform(position, rotation);
     let zone_id = connection.player_data.volatile.zone_id as u16;
@@ -616,23 +690,27 @@ async fn handle_place_furniture(
     if src_item.item_id == 0 {
         return true;
     }
+    let mut placed_item = src_item;
+    if placed_item.condition == 0 {
+        placed_item.condition = 30000;
+    }
 
     let catalog = connection_catalog(connection);
-    let Some(cat_id) = catalog.furniture_catalog_id(src_item.item_id, indoors) else {
+    let Some(cat_id) = catalog.furniture_catalog_id(placed_item.item_id, indoors) else {
         return true;
     };
 
     let actor_cid = connection.player_data.character.content_id;
 
-    if !spawn_furniture {
+    if to_storeroom {
         let storeroom_candidates: Vec<ContainerType> = if indoors {
             INTERIOR_STOREROOM_CONTAINERS.to_vec()
         } else {
-            vec![ContainerType::HousingExteriorStoreroom]
+            EXTERIOR_STOREROOM_CONTAINERS.to_vec()
         };
         let mut free_storeroom: Option<(ContainerType, u16)> = None;
         for c in storeroom_candidates {
-            for s_idx in 0..SLOTS_PER_HOUSING_PAGE {
+            for s_idx in 0..storeroom_slots_per_page(c) {
                 if let Some(existing) = connection.player_data.house_inventory.get_item(c, s_idx)
                     && existing.item_id == 0
                 {
@@ -652,10 +730,10 @@ async fn handle_place_furniture(
             land_ident: estate.land_ident,
             container_type: dst_c as i32,
             slot: dst_s as i32,
-            item_id: src_item.item_id as i32,
+            item_id: placed_item.item_id as i32,
             catalog_id: cat_id as i32,
             material_item_key: 0,
-            stain: src_item.stains[0] as i32,
+            stain: placed_item.stains[0] as i32,
             placed: false,
             pos_x: 0.0,
             pos_y: 0.0,
@@ -682,16 +760,16 @@ async fn handle_place_furniture(
             .house_inventory
             .get_item_mut(dst_c, dst_s)
         {
-            *s = src_item;
+            *s = placed_item;
         }
         let p_src = send_item_update_for(connection, src_container, src_slot, Item::default());
-        let p_dst = send_item_update_for(connection, dst_c, dst_s, src_item);
+        let p_dst = send_item_update_for(connection, dst_c, dst_s, placed_item);
         connection.send_ipc_self(p_src).await;
         connection.send_ipc_self(p_dst).await;
         connection
             .actor_control_self(ActorControlCategory::LogMessage {
                 log_message: LogMessageType::FurnitureMovedToStoreroom as u32,
-                id: src_item.item_id,
+                id: placed_item.item_id,
             })
             .await;
         return true;
@@ -777,10 +855,10 @@ async fn handle_place_furniture(
             land_ident: estate.land_ident,
             container_type: dst_container as i32,
             slot: dst_slot as i32,
-            item_id: src_item.item_id as i32,
+            item_id: placed_item.item_id as i32,
             catalog_id: cat_id as i32,
             material_item_key: 0,
-            stain: src_item.stains[0] as i32,
+            stain: placed_item.stains[0] as i32,
             placed: true,
             pos_x: position.0.x,
             pos_y: position.0.y,
@@ -812,11 +890,15 @@ async fn handle_place_furniture(
         .house_inventory
         .get_item_mut(dst_container, dst_slot)
     {
-        *s = src_item;
+        *s = placed_item;
     }
-    let dst_pkt = send_item_update_for(connection, dst_container, dst_slot, src_item);
+    let dst_pkt = send_item_update_for(connection, dst_container, dst_slot, placed_item);
     connection.send_ipc_self(dst_pkt).await;
 
+    let material_item_key = placed_row
+        .as_ref()
+        .map(|r| r.material_item_key.max(0) as u16)
+        .unwrap_or(0);
     if indoors {
         connection
             .send_ipc_self(ServerZoneIpcSegment::new(
@@ -824,8 +906,8 @@ async fn handle_place_furniture(
                     storage_id: dst_container,
                     slot: dst_slot,
                     item_id: cat_id,
-                    unk1: 1,
-                    stain: src_item.stains[0],
+                    unk1: material_item_key,
+                    stain: placed_item.stains[0],
                     unk2: [0; 3],
                     rotation,
                     position,
@@ -833,24 +915,32 @@ async fn handle_place_furniture(
                 },
             ))
             .await;
+        let value_set = placed_row
+            .as_ref()
+            .and_then(|r| {
+                build_housing_object_data_value_sets(std::slice::from_ref(r))
+                    .into_iter()
+                    .next()
+            })
+            .unwrap_or_else(|| HousingObjectDataValueSet {
+                furniture_index: free_flat,
+                ..Default::default()
+            });
         connection
             .send_ipc_self(ServerZoneIpcSegment::new(
-                ServerZoneIpcData::HousingObjectDataValueSet(HousingObjectDataValueSet {
-                    furniture_index: free_flat,
-                    ..Default::default()
-                }),
+                ServerZoneIpcData::HousingObjectDataValueSet(value_set),
             ))
             .await;
     } else {
         connection
             .send_ipc_self(ServerZoneIpcSegment::new(
                 ServerZoneIpcData::ExteriorFurniturePlaced {
-                    plot_index: estate.plot_index as u8,
-                    slot: dst_slot as u8,
+                    plot_index: raw_plot_index(&estate),
+                    slot: free_flat as u8,
                     unk1: [0; 2],
                     item_id: cat_id,
                     unk2: 0,
-                    stain: src_item.stains[0],
+                    stain: placed_item.stains[0],
                     unk3: [0; 3],
                     rotation,
                     position,
@@ -862,9 +952,9 @@ async fn handle_place_furniture(
 
     connection
         .actor_control_self(ActorControlCategory::FurniturePlacedAck {
-            unk1: dst_container as u32,
-            unk2: dst_slot as u32,
-            unk3: 1,
+            unk1: 0,
+            unk2: 0,
+            unk3: 0,
             unk4: 0,
         })
         .await;
@@ -872,6 +962,7 @@ async fn handle_place_furniture(
     let key = HousingOverlayKey {
         indoors,
         ward_index: estate.ward_index as u8,
+        division: estate.division.clamp(0, 1) as u8,
         plot_index: estate.plot_index as u8,
         slot: free_flat,
     };
@@ -915,12 +1006,148 @@ async fn handle_remove_or_store_furniture(
     if current_item.item_id == 0 {
         return true;
     }
+    let mut returned_item = current_item;
+    if returned_item.condition == 0 {
+        returned_item.condition = 30000;
+    }
 
     let removed_flat_slot = flat_slot_for_placed_container(storage_id, slot);
+    let division = estate.division.clamp(0, 1) as u8;
+    let raw_plot = raw_plot_index(&estate);
+
+    if to_storeroom {
+        let storeroom_candidates: Vec<ContainerType> = if indoors {
+            INTERIOR_STOREROOM_CONTAINERS.to_vec()
+        } else {
+            EXTERIOR_STOREROOM_CONTAINERS.to_vec()
+        };
+        let mut stored_target: Option<(ContainerType, u16)> = None;
+        for c in storeroom_candidates {
+            for s_idx in 0..storeroom_slots_per_page(c) {
+                if let Some(existing) = connection.player_data.house_inventory.get_item(c, s_idx)
+                    && existing.item_id == 0
+                {
+                    stored_target = Some((c, s_idx));
+                    break;
+                }
+            }
+            if stored_target.is_some() {
+                break;
+            }
+        }
+        let Some((dst_c, dst_s)) = stored_target else {
+            connection.send_notice("[Housing] Storeroom is full.").await;
+            return true;
+        };
+
+        if let Some(flat_slot) = removed_flat_slot {
+            let key = HousingOverlayKey {
+                indoors,
+                ward_index: estate.ward_index as u8,
+                division,
+                plot_index: estate.plot_index as u8,
+                slot: flat_slot,
+            };
+            connection
+                .handle
+                .send(ToServer::HousingSim(
+                    HousingSimToServer::RemoveSingleOverlay {
+                        actor_id: connection.player_data.character.actor_id,
+                        key,
+                    },
+                ))
+                .await;
+        }
+
+        {
+            let mut db = connection.database.lock();
+            let _ = move_furniture_row(
+                db.connection_mut(),
+                estate.land_ident,
+                storage_id as i32,
+                slot as i32,
+                dst_c as i32,
+                dst_s as i32,
+                false,
+            );
+        }
+        if let Some(s) = connection
+            .player_data
+            .house_inventory
+            .get_item_mut(storage_id, slot)
+        {
+            *s = Item::default();
+        }
+        if let Some(s) = connection
+            .player_data
+            .house_inventory
+            .get_item_mut(dst_c, dst_s)
+        {
+            *s = returned_item;
+        }
+        let p1 = send_item_update_for(connection, storage_id, slot, Item::default());
+        let p2 = send_item_update_for(connection, dst_c, dst_s, returned_item);
+        connection.send_ipc_self(p1).await;
+        connection.send_ipc_self(p2).await;
+        if let Some(flat_slot) = removed_flat_slot {
+            let ack = if indoors {
+                ActorControlCategory::FurnitureRemovedToInventoryAck {
+                    unk1: flat_slot as u32,
+                    unk2: 0,
+                    unk3: 0,
+                    unk4: 0,
+                }
+            } else {
+                ActorControlCategory::OutdoorFurnitureRemovedAck {
+                    plot_and_slot: ((raw_plot as u32) << 16) | ((flat_slot as u32) & 0xFF),
+                    flag: 0,
+                    unk3: 0,
+                    unk4: 0,
+                }
+            };
+            connection.actor_control_self(ack).await;
+        }
+        connection
+            .actor_control_self(ActorControlCategory::LogMessage {
+                log_message: LogMessageType::FurnitureMovedToStoreroom as u32,
+                id: returned_item.item_id,
+            })
+            .await;
+        if indoors {
+            remove_synced_indoor_slot(connection, estate.land_ident, storage_id, slot);
+        }
+        return true;
+    }
+
+    let mut free_inv_slot: Option<(ContainerType, u16)> = None;
+    for ctype in [
+        ContainerType::Inventory0,
+        ContainerType::Inventory1,
+        ContainerType::Inventory2,
+        ContainerType::Inventory3,
+    ] {
+        for s_idx in 0..35u16 {
+            if let Some(inv_item) = connection.player_data.inventory.get_item(ctype, s_idx)
+                && inv_item.item_id == 0
+            {
+                free_inv_slot = Some((ctype, s_idx));
+                break;
+            }
+        }
+        if free_inv_slot.is_some() {
+            break;
+        }
+    }
+    let Some((inv_ctype, inv_slot)) = free_inv_slot else {
+        connection.send_notice("[Housing] Inventory is full.").await;
+        return true;
+    };
+
     if let Some(flat_slot) = removed_flat_slot {
         let key = HousingOverlayKey {
             indoors,
             ward_index: estate.ward_index as u8,
+            division,
             plot_index: estate.plot_index as u8,
             slot: flat_slot,
         };
@@ -933,70 +1160,6 @@ async fn handle_remove_or_store_furniture(
                 },
             ))
             .await;
-    }
-
-    if to_storeroom {
-        let storeroom_candidates: Vec<ContainerType> = if indoors {
-            INTERIOR_STOREROOM_CONTAINERS.to_vec()
-        } else {
-            vec![ContainerType::HousingExteriorStoreroom]
-        };
-        let mut stored_target: Option<(ContainerType, u16)> = None;
-        for c in storeroom_candidates {
-            for s_idx in 0..SLOTS_PER_HOUSING_PAGE {
-                if let Some(existing) = connection.player_data.house_inventory.get_item(c, s_idx)
-                    && existing.item_id == 0
-                {
-                    stored_target = Some((c, s_idx));
-                    break;
-                }
-            }
-            if stored_target.is_some() {
-                break;
-            }
-        }
-        if let Some((dst_c, dst_s)) = stored_target {
-            {
-                let mut db = connection.database.lock();
-                let _ = move_furniture_row(
-                    db.connection_mut(),
-                    estate.land_ident,
-                    storage_id as i32,
-                    slot as i32,
-                    dst_c as i32,
-                    dst_s as i32,
-                    false,
-                );
-            }
-            if let Some(s) = connection
-                .player_data
-                .house_inventory
-                .get_item_mut(storage_id, slot)
-            {
-                *s = Item::default();
-            }
-            if let Some(s) = connection
-                .player_data
-                .house_inventory
-                .get_item_mut(dst_c, dst_s)
-            {
-                *s = current_item;
-            }
-            let p1 = send_item_update_for(connection, storage_id, slot, Item::default());
-            let p2 = send_item_update_for(connection, dst_c, dst_s, current_item);
-            connection.send_ipc_self(p1).await;
-            connection.send_ipc_self(p2).await;
-            connection
-                .actor_control_self(ActorControlCategory::LogMessage {
-                    log_message: LogMessageType::FurnitureMovedToStoreroom as u32,
-                    id: current_item.item_id,
-                })
-                .await;
-            if indoors {
-                remove_synced_indoor_slot(connection, estate.land_ident, storage_id, slot);
-            }
-            return true;
-        }
     }
 
     {
@@ -1018,43 +1181,35 @@ async fn handle_remove_or_store_furniture(
     let p_clear = send_item_update_for(connection, storage_id, slot, Item::default());
     connection.send_ipc_self(p_clear).await;
 
-    for ctype in [
-        ContainerType::Inventory0,
-        ContainerType::Inventory1,
-        ContainerType::Inventory2,
-        ContainerType::Inventory3,
-    ] {
-        let mut inserted = false;
-        for s_idx in 0..35u16 {
-            if let Some(inv_item) = connection.player_data.inventory.get_item(ctype, s_idx)
-                && inv_item.item_id == 0
-            {
-                connection
-                    .player_data
-                    .inventory
-                    .add_in_slot(current_item, &ctype, s_idx);
-                let pkt = send_item_update_for(connection, ctype, s_idx, current_item);
-                connection.send_ipc_self(pkt).await;
-                inserted = true;
-                break;
-            }
-        }
-        if inserted {
-            break;
-        }
-    }
     connection
-        .actor_control_self(ActorControlCategory::FurnitureRemovedToInventoryAck {
-            unk1: removed_flat_slot.unwrap_or(0) as u32,
-            unk2: 0,
-            unk3: 0,
-            unk4: 0,
-        })
-        .await;
+        .player_data
+        .inventory
+        .add_in_slot(returned_item, &inv_ctype, inv_slot);
+    let pkt = send_item_update_for(connection, inv_ctype, inv_slot, returned_item);
+    connection.send_ipc_self(pkt).await;
+
+    if let Some(flat_slot) = removed_flat_slot {
+        let ack = if indoors {
+            ActorControlCategory::FurnitureRemovedToInventoryAck {
+                unk1: flat_slot as u32,
+                unk2: 0,
+                unk3: 0,
+                unk4: 0,
+            }
+        } else {
+            ActorControlCategory::OutdoorFurnitureRemovedAck {
+                plot_and_slot: ((raw_plot as u32) << 16) | ((flat_slot as u32) & 0xFF),
+                flag: 0,
+                unk3: 0,
+                unk4: 0,
+            }
+        };
+        connection.actor_control_self(ack).await;
+    }
     connection
         .actor_control_self(ActorControlCategory::LogMessage {
             log_message: LogMessageType::FurnitureMovedToInventory as u32,
-            id: current_item.item_id,
+            id: returned_item.item_id,
         })
         .await;
     if indoors {
@@ -1095,10 +1250,11 @@ async fn handle_translate_furniture(
         );
     }
 
+    let raw_plot = raw_plot_index(&estate);
     let plot_and_index = if indoors {
         flat_slot
     } else {
-        ((estate.plot_index as u16) << 8) | (flat_slot & 0x00FF)
+        ((raw_plot as u16) << 8) | (flat_slot & 0x00FF)
     };
     connection
         .send_ipc_self(ServerZoneIpcSegment::new(
@@ -1120,7 +1276,7 @@ async fn handle_translate_furniture(
             plot_number: if estate.is_apartment {
                 0
             } else {
-                estate.plot_index as u16
+                raw_plot as u16
             },
             slot: slot_in_page as u32,
         })
@@ -1134,6 +1290,7 @@ async fn handle_translate_furniture(
                 key: HousingOverlayKey {
                     indoors,
                     ward_index: estate.ward_index as u8,
+                    division: estate.division.clamp(0, 1) as u8,
                     plot_index: estate.plot_index as u8,
                     slot: flat_slot,
                 },
@@ -1219,6 +1376,7 @@ async fn handle_batch_translate(
                     key: HousingOverlayKey {
                         indoors: true,
                         ward_index: estate.ward_index as u8,
+                        division: estate.division.clamp(0, 1) as u8,
                         plot_index: estate.plot_index as u8,
                         slot: flat_slot,
                     },
@@ -1265,36 +1423,133 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
 
     if is_appearance_container(info.target_container) {
         if info.target_container == ContainerType::HousingExteriorAppearance {
-            let pkt_opt = {
+            let mut updated_est_opt: Option<HousingEstateRow> = None;
+            {
                 let mut db = connection.database.lock();
-                estate_by_land_ident(db.connection_mut(), estate.land_ident)
+                if let Some(mut est) = estate_by_land_ident(db.connection_mut(), estate.land_ident)
                     .ok()
                     .flatten()
-                    .map(|mut est| {
-                        let mut ext = StoredHouseExterior::from_json(&est.exterior_json);
-                        match info.target_slot as usize {
-                            0 => ext.roof_stain = stain_id,
-                            1 => ext.walls_stain = stain_id,
-                            2 => ext.windows_stain = stain_id,
-                            3 => ext.door_stain = stain_id,
-                            4 => ext.roof_fixture_stain = stain_id,
-                            5 => ext.wall_fixture_stain = stain_id,
-                            6 => ext.above_door_banner_stain = stain_id,
-                            7 => ext.fence_stain = stain_id,
-                            _ => {}
+                {
+                    let mut ext = StoredHouseExterior::from_json(&est.exterior_json);
+                    let mut interior = StoredHouseInterior::from_json(&est.interior_json);
+                    if info.target_slot == 0 {
+                        ext.set_all_stains(stain_id);
+                        interior.window_stain = stain_id;
+                        interior.door_stain = stain_id;
+                    } else if (1..=8).contains(&info.target_slot) {
+                        let part_idx = (info.target_slot - 1) as usize;
+                        ext.set_stain(part_idx, stain_id);
+                        if part_idx == 2 {
+                            interior.window_stain = stain_id;
+                        } else if part_idx == 3 {
+                            interior.door_stain = stain_id;
                         }
-                        est.exterior_json = ext.to_json();
-                        let _ = save_estate(db.connection_mut(), &est);
-                        ext.to_live_update_packet(&est)
-                    })
-            };
-            if let Some(pkt) = pkt_opt {
+                    }
+                    est.exterior_json = ext.to_json();
+                    est.interior_json = interior.to_json();
+                    let _ = save_estate(db.connection_mut(), &est);
+                    updated_est_opt = Some(est);
+                }
+            }
+            if let Some(est) = updated_est_opt {
+                let ext = StoredHouseExterior::from_json(&est.exterior_json);
+                let pkt = ext.to_live_update_packet(&est);
+                if info.target_slot == 0 {
+                    for s_idx in 0..=8u16 {
+                        let updated_item = connection
+                            .player_data
+                            .house_inventory
+                            .get_item_mut(ContainerType::HousingExteriorAppearance, s_idx)
+                            .filter(|item| item.item_id != 0)
+                            .map(|item| {
+                                item.stains = [stain_id, 0];
+                                *item
+                            });
+                        if let Some(updated_item) = updated_item {
+                            let inv_pkt = send_item_update_for(
+                                connection,
+                                ContainerType::HousingExteriorAppearance,
+                                s_idx,
+                                updated_item,
+                            );
+                            connection.send_ipc_self(inv_pkt).await;
+                        }
+                    }
+                    connection
+                        .send_ipc_self(ServerZoneIpcSegment::new(
+                            ServerZoneIpcData::HousingStainUpdated(HousingStainUpdated {
+                                stain: stain_id,
+                                pad0: 0,
+                                container_id: ContainerType::HousingExteriorAppearance,
+                                slot: 0,
+                                pad1: [0; 3],
+                                plot_index: raw_plot_index(&est),
+                                pad2: 0,
+                                apply_all_exterior_parts: 1,
+                                pad3: 0,
+                            }),
+                        ))
+                        .await;
+                } else {
+                    let updated_item = connection
+                        .player_data
+                        .house_inventory
+                        .get_item_mut(ContainerType::HousingExteriorAppearance, info.target_slot)
+                        .filter(|item| item.item_id != 0)
+                        .map(|item| {
+                            item.stains = [stain_id, 0];
+                            *item
+                        });
+                    if let Some(updated_item) = updated_item {
+                        let inv_pkt = send_item_update_for(
+                            connection,
+                            ContainerType::HousingExteriorAppearance,
+                            info.target_slot,
+                            updated_item,
+                        );
+                        connection.send_ipc_self(inv_pkt).await;
+                    }
+                }
                 connection
                     .send_ipc_self(ServerZoneIpcSegment::new(
                         ServerZoneIpcData::HousingExteriorAppearanceUpdate(pkt),
                     ))
                     .await;
             }
+        } else if info.target_container == ContainerType::HousingInteriorAppearance {
+            let updated_item = connection
+                .player_data
+                .house_inventory
+                .get_item_mut(ContainerType::HousingInteriorAppearance, info.target_slot)
+                .filter(|item| item.item_id != 0)
+                .map(|item| {
+                    item.stains = [stain_id, 0];
+                    *item
+                });
+            if let Some(updated_item) = updated_item {
+                let inv_pkt = send_item_update_for(
+                    connection,
+                    ContainerType::HousingInteriorAppearance,
+                    info.target_slot,
+                    updated_item,
+                );
+                connection.send_ipc_self(inv_pkt).await;
+            }
+            let est = load_active_estate(connection).unwrap_or(estate);
+            let plot_size =
+                PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8).unwrap_or_default();
+            let details = StoredHouseInterior::from_json(&est.interior_json).to_packet(
+                est.light_level.clamp(0, 5) as u8,
+                est.enable_ssao,
+                plot_size,
+                est.is_apartment,
+            );
+            connection
+                .send_ipc_self(ServerZoneIpcSegment::new(
+                    ServerZoneIpcData::HousingInteriorDetails(details),
+                ))
+                .await;
+            patch_synced_indoor_meta(connection, &est);
         }
         return true;
     }
@@ -1310,12 +1565,23 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
         );
     }
 
-    if let Some(item) = connection
+    let updated_item = connection
         .player_data
         .house_inventory
-        .get_item_mut(info.target_container, info.target_slot as u16)
-    {
-        item.stains = [stain_id, 0];
+        .get_item_mut(info.target_container, info.target_slot)
+        .filter(|item| item.item_id != 0)
+        .map(|item| {
+            item.stains = [stain_id, 0];
+            *item
+        });
+    if let Some(updated_item) = updated_item {
+        let inv_pkt = send_item_update_for(
+            connection,
+            info.target_container,
+            info.target_slot,
+            updated_item,
+        );
+        connection.send_ipc_self(inv_pkt).await;
     }
 
     connection
@@ -1326,7 +1592,7 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
                 container_id: info.target_container,
                 slot: info.target_slot as u8,
                 pad1: [0; 3],
-                plot_index: estate.plot_index as u8,
+                plot_index: raw_plot_index(&estate),
                 pad2: 0,
                 apply_all_exterior_parts: 0,
                 pad3: 0,
@@ -1339,7 +1605,7 @@ async fn handle_housing_dye(connection: &mut ZoneConnection, info: &DyeInformati
             connection,
             estate.land_ident,
             info.target_container,
-            info.target_slot as u16,
+            info.target_slot,
             |s| {
                 s.stain = stain_id;
             },
@@ -1553,17 +1819,67 @@ async fn handle_update_aquarium(connection: &mut ZoneConnection, pkt: &UpdateAqu
     let Some(estate) = load_active_estate(connection) else {
         return true;
     };
+    let catalog = connection_catalog(connection);
+    let trim_item_id = if pkt.trimming_container != 9999 {
+        u16::try_from(pkt.trimming_container)
+            .ok()
+            .and_then(container_from_u16)
+            .and_then(|c| {
+                connection
+                    .player_data
+                    .inventory
+                    .get_item(c, pkt.trimming_slot)
+            })
+            .filter(|i| i.item_id != 0)
+            .map(|i| i.item_id)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let mut fish_item_ids = [0u32; 4];
+    let mut fish_params = [0u16; 4];
+    for i in 0..4 {
+        if pkt.fish_containers[i] != 9999
+            && let Some(c) = u16::try_from(pkt.fish_containers[i])
+                .ok()
+                .and_then(container_from_u16)
+            && let Some(item) = connection
+                .player_data
+                .inventory
+                .get_item(c, pkt.fish_slots[i])
+            && item.item_id != 0
+        {
+            fish_item_ids[i] = item.item_id;
+            fish_params[i] = catalog.aquarium_fish_param_for_item(item.item_id);
+        }
+    }
+
+    let water_param = pkt.water_type as u16;
+    let mut count = 1usize;
+    for i in 0..4 {
+        if fish_params[i] != 0 || fish_item_ids[i] != 0 {
+            count = i + 2;
+        }
+    }
+    let value_count = count.min(8) as u8;
+
     if let Some((container, slot_in_page)) =
         placed_container_for_flat_slot(true, pkt.furniture_slot)
     {
         let obj_data = FurnitureObjectData {
             aquarium: Some(AquariumObjectState {
-                trim_item_id: pkt.trim_item_id,
-                water_param: pkt.water_param,
-                fish_item_ids: pkt.fish_item_ids,
-                fish_params: pkt.fish_params,
+                trim_item_id,
+                water_param,
+                fish_item_ids,
+                fish_params,
             }),
-            values: vec![pkt.water_param, pkt.fish_params[0], pkt.fish_params[1]],
+            values: vec![
+                water_param,
+                fish_params[0],
+                fish_params[1],
+                fish_params[2],
+                fish_params[3],
+            ],
             ..Default::default()
         };
         {
@@ -1573,7 +1889,7 @@ async fn handle_update_aquarium(connection: &mut ZoneConnection, pkt: &UpdateAqu
                 estate.land_ident,
                 container as i32,
                 slot_in_page as i32,
-                Some(pkt.trim_item_id as u16),
+                Some(trim_item_id as u16),
                 &obj_data,
             );
         }
@@ -1581,19 +1897,19 @@ async fn handle_update_aquarium(connection: &mut ZoneConnection, pkt: &UpdateAqu
             .send_ipc_self(ServerZoneIpcSegment::new(
                 ServerZoneIpcData::HousingObjectDataValueSet(HousingObjectDataValueSet {
                     furniture_index: pkt.furniture_slot,
-                    value_count: 3,
+                    value_count,
                     reserved: 0,
                     values: [
-                        pkt.water_param,
-                        pkt.fish_params[0],
-                        pkt.fish_params[1],
-                        pkt.fish_params[2],
-                        0,
+                        water_param,
+                        fish_params[0],
+                        fish_params[1],
+                        fish_params[2],
+                        fish_params[3],
                         0,
                         0,
                         0,
                     ],
-                    param_a: [pkt.trim_item_id as u8, 0, 0, 0, 0, 0, 0, 0],
+                    param_a: [trim_item_id as u8, 0, 0, 0, 0, 0, 0, 0],
                     param_b: [0; 8],
                     param_c: [0; 8],
                     padding: [0; 4],
@@ -1607,7 +1923,7 @@ async fn handle_update_aquarium(connection: &mut ZoneConnection, pkt: &UpdateAqu
             container,
             slot_in_page,
             |s| {
-                s.material_item_key = pkt.trim_item_id as u16;
+                s.material_item_key = trim_item_id as u16;
                 s.object_data_json = obj_json;
             },
         );
@@ -2050,6 +2366,7 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
                 .is_some_and(|w| {
                     w.territory_type_id == est.territory_type_id as u16
                         && w.ward_index == est.ward_index as u8
+                        && w.division == est.division.clamp(0, 1) as u8
                 });
             let matches_owner = est.owner_content_id == connection.player_data.character.content_id;
 

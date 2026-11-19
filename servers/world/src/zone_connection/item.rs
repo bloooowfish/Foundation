@@ -74,26 +74,32 @@ impl ZoneConnection {
     }
 
     pub async fn send_housing_inventory(&mut self, which: DesiredHousingInventoryPages) {
-        let cloned_inv = match which {
+        match which {
             DesiredHousingInventoryPages::Interior => {
-                self.player_data.house_inventory.interior.clone()
+                let cloned_inv = self.player_data.house_inventory.interior.clone();
+                for container in cloned_inv.into_iter() {
+                    self.send_container(&container, container.kind).await;
+                }
             }
             DesiredHousingInventoryPages::InteriorStoreroom => {
-                self.player_data.house_inventory.interior_storeroom.clone()
+                let cloned_inv = self.player_data.house_inventory.interior_storeroom.clone();
+                for container in cloned_inv.into_iter() {
+                    self.send_container(&container, container.kind).await;
+                }
             }
             DesiredHousingInventoryPages::Exterior => {
-                self.player_data.house_inventory.exterior.clone()
+                let cloned_inv = self.player_data.house_inventory.exterior.clone();
+                for container in cloned_inv.into_iter() {
+                    self.send_container(&container, container.kind).await;
+                }
             }
             DesiredHousingInventoryPages::ExteriorStoreroom => {
-                self.player_data.house_inventory.exterior_storeroom.clone()
+                let cloned_inv = self.player_data.house_inventory.exterior_storeroom.clone();
+                for container in cloned_inv.into_iter() {
+                    self.send_container(&container, container.kind).await;
+                }
             }
-            DesiredHousingInventoryPages::None => {
-                return;
-            }
-        };
-
-        for container in cloned_inv.into_iter() {
-            self.send_container(&container, container.kind).await;
+            DesiredHousingInventoryPages::None => {}
         }
     }
 

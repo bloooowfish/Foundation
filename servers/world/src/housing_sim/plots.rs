@@ -92,6 +92,23 @@ pub fn plot_spec_by_raw_index(
     table.get(raw_plot_index as usize)
 }
 
+/// Computes the cumulative 7.58 outdoor furniture slot offset (`0..1460`) for `plot_index` within one division.
+pub fn outdoor_plot_base_offset(
+    territory_type_id: u16,
+    division: u8,
+    plot_index: u8,
+) -> Option<usize> {
+    if division > 1 || plot_index >= 30 {
+        return None;
+    }
+    let mut offset = 0usize;
+    for p in 0..plot_index {
+        let spec = plot_spec(territory_type_id, division, p)?;
+        offset += super::containers::outdoor_slot_capacity(spec.size);
+    }
+    Some(offset)
+}
+
 /// Finds the nearest `(division, plot_index)` in `territory_type_id` to a world position.
 pub fn nearest_plot_to_position(territory_type_id: u16, world_pos: Position) -> Option<(u8, u8)> {
     let idx = (0u8..60).min_by(|&a, &b| {
@@ -648,5 +665,27 @@ mod tests {
         assert_eq!(wrap_angle_radians(f32::NEG_INFINITY), 0.0);
         let huge = wrap_angle_radians(1.0e12);
         assert!((-std::f32::consts::PI..=std::f32::consts::PI).contains(&huge));
+    }
+
+    #[test]
+    fn outdoor_plot_base_offset_sums_to_1460_across_all_districts_and_divisions() {
+        for territory_id in HOUSING_DISTRICT_TERRITORIES {
+            for division in [0u8, 1] {
+                assert_eq!(outdoor_plot_base_offset(territory_id, division, 0), Some(0));
+                assert_eq!(outdoor_plot_base_offset(territory_id, division, 30), None);
+                let last_offset =
+                    outdoor_plot_base_offset(territory_id, division, 29).expect("plot 29 offset");
+                let last_cap = super::super::containers::outdoor_slot_capacity(
+                    plot_spec(territory_id, division, 29)
+                        .expect("plot 29 spec")
+                        .size,
+                );
+                assert_eq!(
+                    last_offset + last_cap,
+                    1460,
+                    "zone {territory_id} div {division} total outdoor slots must sum to 1460"
+                );
+            }
+        }
     }
 }

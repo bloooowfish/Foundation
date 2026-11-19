@@ -46,6 +46,7 @@ pub use crystals::{CrystalKind, CrystalsStorage};
 use crate::{GameData, ItemInfoQuery};
 
 const MAX_NORMAL_STORAGE: usize = 35;
+pub const MAX_EXTERIOR_STORAGE: usize = 40;
 pub const MAX_LARGE_STORAGE: usize = 50;
 
 #[derive(Debug, Clone, Deserialize, Serialize, AsExpression, FromSqlRow)]
@@ -635,8 +636,8 @@ pub struct HousingInventory {
     pub interior_storeroom: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
     // TODO: Unclear if we need to emulate this
     pub interior_appearance: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
-    pub exterior: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
-    pub exterior_storeroom: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
+    pub exterior: Vec<GenericStorage<MAX_EXTERIOR_STORAGE>>,
+    pub exterior_storeroom: Vec<GenericStorage<MAX_EXTERIOR_STORAGE>>,
     // TODO: Unclear if we need to emulate this
     pub exterior_appearance: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
 }
@@ -648,7 +649,7 @@ impl HousingInventory {
     pub const INT_STORAGE_MANSION: usize = 12;
 }
 
-// By default, support full 12 placed & storeroom pages (600 slots).
+// By default, support full 12 placed & storeroom pages indoors (600 slots) and 2 pages outdoors (80 slots).
 impl Default for HousingInventory {
     fn default() -> Self {
         Self {
@@ -708,17 +709,46 @@ impl Default for HousingInventory {
                 ContainerType::HousingInteriorAppearance,
             )],
 
-            exterior: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
-                ContainerType::HousingExteriorPlacedItems,
-            )],
-            exterior_storeroom: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
-                ContainerType::HousingExteriorStoreroom,
-            )],
+            exterior: vec![
+                GenericStorage::<MAX_EXTERIOR_STORAGE>::new(
+                    ContainerType::HousingExteriorPlacedItems,
+                ),
+                GenericStorage::<MAX_EXTERIOR_STORAGE>::new(
+                    ContainerType::HousingExteriorPlacedItems2,
+                ),
+            ],
+            exterior_storeroom: vec![
+                GenericStorage::<MAX_EXTERIOR_STORAGE>::new(
+                    ContainerType::HousingExteriorStoreroom,
+                ),
+                GenericStorage::<MAX_EXTERIOR_STORAGE>::new(
+                    ContainerType::HousingExteriorStoreroom2,
+                ),
+            ],
             exterior_appearance: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
                 ContainerType::HousingExteriorAppearance,
             )],
         }
     }
+}
+
+fn insert_into_pages<const N: usize>(
+    pages: &mut [GenericStorage<N>],
+    item: Item,
+) -> Option<ItemInfo> {
+    for page in pages {
+        for (slot_index, slot) in page.slots.iter_mut().enumerate() {
+            if slot.quantity == 0 {
+                slot.clone_from(&item);
+                return Some(ItemInfo {
+                    slot: slot_index as u16,
+                    container: page.kind,
+                    ..(*slot).into()
+                });
+            }
+        }
+    }
+    None
 }
 
 impl HousingInventory {
@@ -727,41 +757,17 @@ impl HousingInventory {
         item: Item,
         desired_pages: DesiredHousingInventoryPages,
     ) -> Option<ItemInfo> {
-        let desired_pages = match desired_pages {
-            DesiredHousingInventoryPages::Interior => &mut self.interior,
-            DesiredHousingInventoryPages::InteriorStoreroom => &mut self.interior_storeroom,
-            DesiredHousingInventoryPages::Exterior => {
-                if !self.exterior.is_empty() {
-                    &mut self.exterior
-                } else {
-                    return None;
-                }
+        match desired_pages {
+            DesiredHousingInventoryPages::Interior => insert_into_pages(&mut self.interior, item),
+            DesiredHousingInventoryPages::InteriorStoreroom => {
+                insert_into_pages(&mut self.interior_storeroom, item)
             }
+            DesiredHousingInventoryPages::Exterior => insert_into_pages(&mut self.exterior, item),
             DesiredHousingInventoryPages::ExteriorStoreroom => {
-                if !self.exterior_storeroom.is_empty() {
-                    &mut self.exterior_storeroom
-                } else {
-                    return None;
-                }
+                insert_into_pages(&mut self.exterior_storeroom, item)
             }
-            DesiredHousingInventoryPages::None => {
-                return None;
-            }
-        };
-
-        for page in desired_pages {
-            for (slot_index, slot) in page.slots.iter_mut().enumerate() {
-                if slot.quantity == 0 {
-                    slot.clone_from(&item);
-                    return Some(ItemInfo {
-                        slot: slot_index as u16,
-                        container: page.kind,
-                        ..(*slot).into()
-                    });
-                }
-            }
+            DesiredHousingInventoryPages::None => None,
         }
-        None
     }
 
     pub fn get_desired_pages_from_intendeduse(
@@ -823,7 +829,9 @@ impl HousingInventory {
             ContainerType::HousingExteriorAppearance => Some(&mut self.exterior_appearance[0]),
 
             ContainerType::HousingExteriorPlacedItems => Some(&mut self.exterior[0]),
+            ContainerType::HousingExteriorPlacedItems2 => Some(&mut self.exterior[1]),
             ContainerType::HousingExteriorStoreroom => Some(&mut self.exterior_storeroom[0]),
+            ContainerType::HousingExteriorStoreroom2 => Some(&mut self.exterior_storeroom[1]),
             _ => None,
         }
     }
@@ -860,7 +868,9 @@ impl HousingInventory {
             ContainerType::HousingExteriorAppearance => Some(&self.exterior_appearance[0]),
 
             ContainerType::HousingExteriorPlacedItems => Some(&self.exterior[0]),
+            ContainerType::HousingExteriorPlacedItems2 => Some(&self.exterior[1]),
             ContainerType::HousingExteriorStoreroom => Some(&self.exterior_storeroom[0]),
+            ContainerType::HousingExteriorStoreroom2 => Some(&self.exterior_storeroom[1]),
             _ => None,
         }
     }
@@ -908,6 +918,22 @@ mod tests {
         let mut hinv = HousingInventory::default();
         assert!(
             hinv.get_item(ContainerType::HousingInteriorPlacedItems1, 50)
+                .is_none()
+        );
+        assert!(
+            hinv.get_item(ContainerType::HousingExteriorPlacedItems, 39)
+                .is_some()
+        );
+        assert!(
+            hinv.get_item(ContainerType::HousingExteriorPlacedItems, 40)
+                .is_none()
+        );
+        assert!(
+            hinv.get_item(ContainerType::HousingExteriorPlacedItems2, 39)
+                .is_some()
+        );
+        assert!(
+            hinv.get_item_mut(ContainerType::HousingExteriorPlacedItems2, 40)
                 .is_none()
         );
         assert!(

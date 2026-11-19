@@ -8,7 +8,7 @@ use kawari::common::{
 use kawari::constants::COMPLETED_QUEST_BITMASK_SIZE;
 use kawari::ipc::zone::{
     ActorControlCategory, ActorControlSelf, ApartmentBuildingState, ApartmentList,
-    AvailabilityType, FurnitureList, FurnitureTranslatedForObserver, GameMasterRank,
+    AvailabilityType, FurnitureTranslatedForObserver, GameMasterRank,
     GrandCompany as IpcGrandCompany, House, HouseList, HousingEstateGreeting,
     HousingInteriorDetails, HousingObjectDataValueSet, HousingOccupiedLandInfo,
     HousingStainUpdated, HousingVacantLandInfo, HousingWardInfo, HousingWardSummaryItem,
@@ -35,8 +35,9 @@ use super::db::{
 use super::fixtures::{
     StoredHouseExterior, StoredHouseInterior, appeal_tags_from_row, build_apartment_entries,
     build_house_list_entry, build_housing_object_data_value_sets, build_indoor_furniture_lists,
-    build_outdoor_furniture_list, build_owned_housing_data, housing_interior_ready_primary_id,
-    housing_interior_ready_secondary_id, is_fc_estate, ward_summary_flags_for_estate,
+    build_owned_housing_data, build_ward_outdoor_furniture_lists,
+    housing_interior_ready_primary_id, housing_interior_ready_secondary_id, is_fc_estate,
+    raw_plot_index, ward_summary_flags_for_estate,
 };
 use super::gamedata_ext::{
     HousingCatalog, cached_housing_catalog, default_renovation_row_for_district_and_size,
@@ -254,6 +255,7 @@ pub fn build_overlay_objects_from_rows(
     rows: &[HousingFurnitureRow],
     indoors: bool,
     ward_index: u8,
+    division: u8,
     plot_index: u8,
 ) -> Vec<HousingOverlayObject> {
     let mut out = Vec::new();
@@ -270,6 +272,7 @@ pub fn build_overlay_objects_from_rows(
             key: HousingOverlayKey {
                 indoors,
                 ward_index,
+                division,
                 plot_index,
                 slot: flat_slot,
             },
@@ -413,8 +416,8 @@ pub fn rebuild_house_inventory_from_db(
             super::containers::is_interior_placed_container(ctype)
                 || super::containers::is_interior_storeroom_container(ctype)
         } else {
-            ctype == ContainerType::HousingExteriorPlacedItems
-                || ctype == ContainerType::HousingExteriorStoreroom
+            super::containers::is_exterior_placed_container(ctype)
+                || super::containers::is_exterior_storeroom_container(ctype)
         };
         if !is_matching_scope {
             continue;
@@ -427,6 +430,7 @@ pub fn rebuild_house_inventory_from_db(
             *slot_mut = Item {
                 item_id: row.item_id.max(0) as u32,
                 quantity: 1,
+                condition: 30000,
                 stains: [row.stain.clamp(0, u8::MAX as i32) as u8, 0],
                 ..Default::default()
             };
@@ -451,6 +455,7 @@ pub fn rebuild_house_inventory_from_db(
                 *slot_mut = Item {
                     item_id: meta.item_id,
                     quantity: 1,
+                    condition: 30000,
                     ..Default::default()
                 };
             }
@@ -468,6 +473,22 @@ pub fn rebuild_house_inventory_from_db(
             exterior.above_door_banner_stain,
             exterior.fence_stain,
         ];
+        if exterior.roof_id != 0
+            && let Some(united_meta) = catalog.united_item_for_roof_part(exterior.roof_id)
+            && catalog.united_parts_for_item(united_meta.item_id) == Some(parts)
+            && let Some(slot_mut) = connection
+                .player_data
+                .house_inventory
+                .get_item_mut(ContainerType::HousingExteriorAppearance, 0)
+        {
+            *slot_mut = Item {
+                item_id: united_meta.item_id,
+                quantity: 1,
+                condition: 30000,
+                stains: [exterior.roof_stain, 0],
+                ..Default::default()
+            };
+        }
         for (idx, part_id) in parts.into_iter().enumerate() {
             if part_id == 0 {
                 continue;
@@ -477,11 +498,12 @@ pub fn rebuild_house_inventory_from_db(
                 && let Some(slot_mut) = connection
                     .player_data
                     .house_inventory
-                    .get_item_mut(ContainerType::HousingExteriorAppearance, idx as u16)
+                    .get_item_mut(ContainerType::HousingExteriorAppearance, (idx + 1) as u16)
             {
                 *slot_mut = Item {
                     item_id: meta.item_id,
                     quantity: 1,
+                    condition: 30000,
                     stains: [stains[idx], 0],
                     ..Default::default()
                 };
@@ -529,7 +551,7 @@ pub async fn init_outdoor_ward(connection: &mut ZoneConnection, zone_id: u16, wa
         let mut main_houses = [House::default(); 30];
         let mut sub_houses = [House::default(); 30];
         let mut opp_markers = [WardMapInfo::default(); 30];
-        let mut furn_lists = Vec::new();
+        let mut div_estates_with_rows = Vec::new();
 
         for estate in &ward_estates {
             let entry = build_house_list_entry(estate);
@@ -542,10 +564,19 @@ pub async fn init_outdoor_ward(connection: &mut ZoneConnection, zone_id: u16, wa
                 sub_houses[p_idx] = entry;
             }
 
-            let placed =
-                list_placed_furniture_in_scope(conn, estate.land_ident, false).unwrap_or_default();
-            furn_lists.push(build_outdoor_furniture_list(estate, &placed));
+            if !estate.is_apartment && estate.division.clamp(0, 1) as u8 == division {
+                let placed = list_placed_furniture_in_scope(conn, estate.land_ident, false)
+                    .unwrap_or_default();
+                div_estates_with_rows.push((estate, placed));
+            }
         }
+        let furn_lists = build_ward_outdoor_furniture_lists(
+            zone_id,
+            world_id,
+            ward,
+            division,
+            &div_estates_with_rows,
+        );
 
         let opp_slice = if division == 0 {
             &sub_houses
@@ -676,29 +707,13 @@ pub async fn init_outdoor_ward(connection: &mut ZoneConnection, zone_id: u16, wa
         ))
         .await;
 
-    // Send outdoor FurnitureList packets (empty placeholders if no estates exist yet).
-    if ward_furn_lists.is_empty() {
-        for index in 0..15 {
-            connection
-                .send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
-                    FurnitureList {
-                        estate_type: EstateType::Ward,
-                        count: 15,
-                        index,
-                        furniture: vec![Default::default(); 100],
-                        ..Default::default()
-                    },
-                )))
-                .await;
-        }
-    } else {
-        for list in ward_furn_lists {
-            connection
-                .send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
-                    list,
-                )))
-                .await;
-        }
+    // Send all 15 ward-wide outdoor FurnitureList chunks (`0..15`).
+    for list in ward_furn_lists {
+        connection
+            .send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
+                list,
+            )))
+            .await;
     }
 
     send_owned_housing(connection).await;
@@ -801,6 +816,7 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
         resolved_house_id,
         plot_size,
         estate.is_apartment,
+        is_fc_estate(&estate),
         &placed_rows,
     );
 
@@ -1035,8 +1051,13 @@ pub async fn sync_current_overlays_for_connection(
                 list_placed_furniture_in_scope(db.connection_mut(), sel.land_ident, true)
                     .unwrap_or_default()
             };
-            let objects =
-                build_overlay_objects_from_rows(&rows, true, sel.ward_index, sel.plot_index);
+            let objects = build_overlay_objects_from_rows(
+                &rows,
+                true,
+                sel.ward_index,
+                sel.division,
+                sel.plot_index,
+            );
             connection
                 .handle
                 .send(ToServer::HousingSim(
@@ -1045,6 +1066,7 @@ pub async fn sync_current_overlays_for_connection(
                         scope: HousingOverlayScope {
                             indoors: true,
                             ward_index: sel.ward_index,
+                            division: sel.division,
                             plot_index: sel.plot_index,
                         },
                         objects,
@@ -1077,10 +1099,12 @@ pub async fn sync_current_overlays_for_connection(
                     .collect::<Vec<_>>()
             };
             for (estate, rows) in ward_estates {
+                let division = estate.division.clamp(0, 1) as u8;
                 let objects = build_overlay_objects_from_rows(
                     &rows,
                     false,
                     estate.ward_index as u8,
+                    division,
                     estate.plot_index as u8,
                 );
                 connection
@@ -1091,6 +1115,7 @@ pub async fn sync_current_overlays_for_connection(
                             scope: HousingOverlayScope {
                                 indoors: false,
                                 ward_index: estate.ward_index as u8,
+                                division,
                                 plot_index: estate.plot_index as u8,
                             },
                             objects,
@@ -1238,6 +1263,12 @@ pub async fn warp_to_apartment_outdoor(
     division: u8,
 ) {
     let div = division.clamp(0, 1);
+    let current_zone_id = connection.player_data.volatile.zone_id as u16;
+    let same_ward_diff_division = current_zone_id == territory_type_id
+        && connection
+            .housing_sim
+            .display_ward_context
+            .is_some_and(|ctx| ctx.ward_index == ward_index && ctx.division != div);
     connection.entering_subdivision = div != 0;
     connection
         .handle
@@ -1251,6 +1282,11 @@ pub async fn warp_to_apartment_outdoor(
             },
         ))
         .await;
+    if same_ward_diff_division {
+        init_outdoor_ward(connection, territory_type_id, ward_index as u16).await;
+        sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingOutdoor)
+            .await;
+    }
 }
 
 /// Warps the player out to `estate`'s outdoor ward plot (or Apartment Building entrance when `is_apartment` is true).
@@ -1271,6 +1307,14 @@ pub async fn warp_to_estate_outdoor(
         .await;
         return;
     }
+    let territory_type_id = estate.territory_type_id as u16;
+    let ward_index = estate.ward_index as u8;
+    let current_zone_id = connection.player_data.volatile.zone_id as u16;
+    let same_ward_diff_division = current_zone_id == territory_type_id
+        && connection
+            .housing_sim
+            .display_ward_context
+            .is_some_and(|ctx| ctx.ward_index == ward_index && ctx.division != division);
     connection.entering_subdivision = division != 0;
     connection
         .handle
@@ -1278,8 +1322,8 @@ pub async fn warp_to_estate_outdoor(
             HousingSimToServer::WarpToHousingPlot {
                 client_id: connection.id,
                 actor_id: connection.player_data.character.actor_id,
-                territory_type_id: estate.territory_type_id as u16,
-                ward_index: estate.ward_index as u8,
+                territory_type_id,
+                ward_index,
                 division,
                 plot_index: estate.plot_index as u8,
                 override_pos,
@@ -1287,6 +1331,11 @@ pub async fn warp_to_estate_outdoor(
             },
         ))
         .await;
+    if same_ward_diff_division {
+        init_outdoor_ward(connection, territory_type_id, ward_index as u16).await;
+        sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingOutdoor)
+            .await;
+    }
 }
 
 /// Executes live reload after DB mutations (HTTP `/preset/apply`, `/undo`, `!housing reload`, or pattern change).
@@ -1428,13 +1477,21 @@ pub async fn execute_housing_reload(
     }
 
     // Player is standing outdoors in residential ward.
-    let in_same_ward = current_zone_id == estate.territory_type_id as u16
+    let target_div = estate.division.clamp(0, 1) as u8;
+    let in_same_ward_same_div = current_zone_id == estate.territory_type_id as u16
+        && connection
+            .housing_sim
+            .display_ward_context
+            .is_some_and(|ctx| {
+                ctx.ward_index == estate.ward_index as u8 && ctx.division == target_div
+            });
+    let in_same_ward_instance = current_zone_id == estate.territory_type_id as u16
         && connection
             .housing_sim
             .display_ward_context
             .is_some_and(|ctx| ctx.ward_index == estate.ward_index as u8);
 
-    if !in_same_ward && !force_enter {
+    if !in_same_ward_instance && !force_enter {
         tracing::debug!(
             land_ident = ident,
             zone_id = current_zone_id,
@@ -1443,8 +1500,8 @@ pub async fn execute_housing_reload(
         return;
     }
 
-    if in_same_ward && mode != ReloadMode::ZoneReload && !estate.is_apartment {
-        // Push live outdoor appearance (476), FurnitureList, and interactive overlays with zero loading screen!
+    if in_same_ward_same_div && mode != ReloadMode::ZoneReload && !estate.is_apartment {
+        // Push live outdoor appearance (476), 15-chunk ward FurnitureList, and interactive overlays with zero loading screen!
         let stored_ext = StoredHouseExterior::from_json(&estate.exterior_json);
         let ext_pkt = stored_ext.to_live_update_packet(&estate);
         connection
@@ -1453,27 +1510,48 @@ pub async fn execute_housing_reload(
             ))
             .await;
 
-        let placed = {
+        let world_id = connection.config.world_id;
+        let ward_index = estate.ward_index as u8;
+        let ward_furn_lists = {
             let mut db = connection.database.lock();
-            list_placed_furniture_in_scope(db.connection_mut(), estate.land_ident, false)
-                .unwrap_or_default()
+            let conn = db.connection_mut();
+            let ward_estates =
+                estates_in_ward(conn, current_zone_id, world_id, ward_index).unwrap_or_default();
+            let estates_with_rows: Vec<(&HousingEstateRow, Vec<HousingFurnitureRow>)> =
+                ward_estates
+                    .iter()
+                    .filter(|e| !e.is_apartment && e.division.clamp(0, 1) as u8 == target_div)
+                    .map(|e| {
+                        let placed = list_placed_furniture_in_scope(conn, e.land_ident, false)
+                            .unwrap_or_default();
+                        (e, placed)
+                    })
+                    .collect();
+            build_ward_outdoor_furniture_lists(
+                current_zone_id,
+                world_id,
+                ward_index,
+                target_div,
+                &estates_with_rows,
+            )
         };
-        let flist = build_outdoor_furniture_list(&estate, &placed);
-        connection
-            .send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
-                flist,
-            )))
-            .await;
+        for flist in ward_furn_lists {
+            connection
+                .send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
+                    flist,
+                )))
+                .await;
+        }
         rebuild_house_inventory_from_db(connection, &estate, false);
         sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingOutdoor)
             .await;
     } else if !estate.is_apartment {
-        let same_ward_pos = if in_same_ward {
+        let same_ward_pos = if preserve_player_pos && in_same_ward_same_div {
             Some(connection.player_data.volatile.position)
         } else {
             None
         };
-        let same_ward_rot = if in_same_ward {
+        let same_ward_rot = if preserve_player_pos && in_same_ward_same_div {
             Some(connection.player_data.volatile.rotation as f32)
         } else {
             None
@@ -1684,6 +1762,7 @@ pub async fn push_indoor_live_diff(
         let item = Item {
             item_id: new.item_id,
             quantity: 1,
+            condition: 30000,
             stains: [new.stain, 0],
             ..Default::default()
         };
@@ -1771,7 +1850,7 @@ pub async fn push_indoor_live_diff(
                 container_id: stained.container_type,
                 slot: stained.slot_in_page as u8,
                 pad1: [0; 3],
-                plot_index: estate.plot_index as u8,
+                plot_index: raw_plot_index(estate),
                 pad2: 0,
                 apply_all_exterior_parts: 0,
                 pad3: 0,
@@ -1838,6 +1917,7 @@ pub async fn push_indoor_live_diff(
     if diff.needs_overlay_sync() {
         let catalog = connection_catalog(connection);
         let ward_index = estate.ward_index as u8;
+        let division = estate.division.clamp(0, 1) as u8;
         let plot_index = estate.plot_index as u8;
         let actor_id = connection.player_data.character.actor_id;
 
@@ -1851,6 +1931,7 @@ pub async fn push_indoor_live_diff(
                             key: HousingOverlayKey {
                                 indoors: true,
                                 ward_index,
+                                division,
                                 plot_index,
                                 slot: old.flat_slot,
                             },
@@ -1870,6 +1951,7 @@ pub async fn push_indoor_live_diff(
                                 key: HousingOverlayKey {
                                     indoors: true,
                                     ward_index,
+                                    division,
                                     plot_index,
                                     slot: new.flat_slot,
                                 },
@@ -1894,6 +1976,7 @@ pub async fn push_indoor_live_diff(
                             key: HousingOverlayKey {
                                 indoors: true,
                                 ward_index,
+                                division,
                                 plot_index,
                                 slot: moved.flat_slot,
                             },
@@ -2146,17 +2229,13 @@ pub async fn send_housing_placard_info(
         } else {
             0
         };
-
-        connection
-            .send_ipc_self(ServerZoneIpcSegment::new(
-                ServerZoneIpcData::HousingVacantLandInfo(HousingVacantLandInfo {
-                    purchase_type: PurchaseType::Unavailable,
-                    tenant_type: TenantType::Any,
-                    availability_type: AvailabilityType::Unavailable,
-                    ..Default::default()
-                }),
-            ))
-            .await;
+        let estate_type_byte = if est.is_apartment {
+            EstateType::ApartmentRoom as u8
+        } else if is_fc_estate(est) {
+            EstateType::FreeCompanyEstate as u8
+        } else {
+            EstateType::PersonalEstate as u8
+        };
 
         connection
             .send_ipc_self(ServerZoneIpcSegment::new(
@@ -2167,7 +2246,7 @@ pub async fn send_housing_placard_info(
                     house_icon,
                     house_size: PlotSize::from_repr(est.plot_size.clamp(0, 2) as u8)
                         .unwrap_or_default(),
-                    unk2: 0,
+                    unk2: estate_type_byte,
                     estate_name: clamp_utf8(&est.estate_name, MAX_ESTATE_NAME_BYTES),
                     unk3: 0,
                     estate_greeting: clamp_utf8(&est.greeting, MAX_ESTATE_GREETING_BYTES),
@@ -2185,6 +2264,8 @@ pub async fn send_housing_placard_info(
                     purchase_type: PurchaseType::FCFS,
                     tenant_type: TenantType::Any,
                     availability_type: AvailabilityType::Available,
+                    unk2: u32::MAX,
+                    unk3: u32::MAX,
                     ..Default::default()
                 }),
             ))
@@ -2612,5 +2693,31 @@ mod tests {
             0x5566_7788
         );
         assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 6);
+    }
+
+    #[test]
+    fn outdoor_furniture_removed_ack_serializes_magic_1007_and_plot_slot() {
+        use binrw::BinWrite;
+        use std::io::Cursor;
+
+        let plot_and_slot = (35u32 << 16) | 42;
+        let pkt = ActorControlSelf {
+            category: ActorControlCategory::OutdoorFurnitureRemovedAck {
+                plot_and_slot,
+                flag: 0,
+                unk3: 0,
+                unk4: 0,
+            },
+        };
+        let mut buf = Cursor::new(Vec::new());
+        pkt.write_le(&mut buf)
+            .expect("ActorControlSelf should serialize");
+        let bytes = buf.into_inner();
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1007);
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            plot_and_slot
+        );
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 0);
     }
 }

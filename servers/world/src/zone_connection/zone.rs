@@ -214,7 +214,7 @@ impl ZoneConnection {
                 if game_data.is_duty_recorder_allowed(content_finder_condition_id) {
                     flags |= ZoneInitFlags::ENABLE_RECORD_READY_CHECK;
                 }
-            } else {
+            } else if lua_zone.intended_use != TerritoryIntendedUse::HousingIndoor {
                 flags |= ZoneInitFlags::ENABLE_FLYING;
             }
 
@@ -232,6 +232,7 @@ impl ZoneConnection {
                 } else {
                     0
                 },
+                position: self.player_data.volatile.position,
                 game_festival_ids,
                 game_festival_phases,
                 ui_festival_ids: self.config.active_festivals.map(FestivalId),
