@@ -67,12 +67,24 @@ pub struct HousingSimSession {
     pub display_ward_context: Option<WardContext>,
     pub pending_indoor_furniture_list_tail: Option<Vec<FurnitureList>>,
     pub pending_indoor_finish_loading: bool,
+    pub pending_indoor_finish_loading_since: Option<tokio::time::Instant>,
     pub pending_indoor_overlay_sync: bool,
     pub pending_remodel_container: Option<ContainerType>,
     pub pending_placard_location: Option<(u8, u8)>,
     pub last_entrance_plot: Option<(u8, u8)>,
     pub login_ward_spawn: Option<LoginWardSpawn>,
     pub is_owner_authorized: bool,
+}
+
+impl HousingSimSession {
+    /// Clears transient indoor loading and deferral flags across zone transitions or tail flushes.
+    pub fn clear_pending_indoor_load(&mut self) {
+        self.pending_indoor_furniture_list_tail = None;
+        self.pending_indoor_finish_loading = false;
+        self.pending_indoor_finish_loading_since = None;
+        self.pending_indoor_overlay_sync = false;
+        self.pending_remodel_container = None;
+    }
 }
 
 /// Public snapshot of an online player session exposed via HTTP `/status` & SSE `/events`.
@@ -349,4 +361,29 @@ fn detect_default_preset_roots() -> Vec<PathBuf> {
     roots.push(PathBuf::from("housing-exports"));
     roots.push(PathBuf::from("resources/housing-presets"));
     roots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_pending_indoor_load_resets_all_transient_fields() {
+        let mut session = HousingSimSession {
+            pending_indoor_furniture_list_tail: Some(vec![FurnitureList::default()]),
+            pending_indoor_finish_loading: true,
+            pending_indoor_finish_loading_since: Some(tokio::time::Instant::now()),
+            pending_indoor_overlay_sync: true,
+            pending_remodel_container: Some(ContainerType::HousingInteriorPlacedItems1),
+            ..Default::default()
+        };
+
+        session.clear_pending_indoor_load();
+
+        assert!(session.pending_indoor_furniture_list_tail.is_none());
+        assert!(!session.pending_indoor_finish_loading);
+        assert!(session.pending_indoor_finish_loading_since.is_none());
+        assert!(!session.pending_indoor_overlay_sync);
+        assert!(session.pending_remodel_container.is_none());
+    }
 }

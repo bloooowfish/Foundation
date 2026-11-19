@@ -698,10 +698,14 @@ pub async fn init_outdoor_ward(connection: &mut ZoneConnection, zone_id: u16, wa
     publish_session_snapshot(connection, TerritoryIntendedUse::HousingOutdoor);
 }
 
-/// Initializes a housing interior or apartment after `ZoneInit`, deferring `FurnitureList` chunks beyond index 2 until `FinishEstateRemodel { mode: 255 }`.
-pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, house_id: HouseId) {
+/// Resolves and binds the active indoor estate before `send_owned_housing` and `ZoneInit`.
+pub fn prepare_active_indoor_estate_for_zone_init(
+    connection: &mut ZoneConnection,
+    zone_id: u16,
+    house_id: HouseId,
+) -> Option<HousingEstateRow> {
     let content_id = connection.player_data.character.content_id as u64;
-    let selected = {
+    let estate = {
         let mut db = connection.database.lock();
         let conn = db.connection_mut();
         estate_by_house_id(conn, house_id)
@@ -720,9 +724,23 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
                     .into_iter()
                     .find(|e| e.is_apartment == is_apartment_territory(zone_id))
             })
-    };
+    }?;
 
-    let Some(estate) = selected else {
+    connection.housing_sim.active_estate = Some(build_selection_from_row(&estate, true));
+    connection.housing_sim.is_owner_authorized =
+        estate.owner_content_id == 0 || estate.owner_content_id == content_id as i64;
+    Some(estate)
+}
+
+/// Initializes a housing interior or apartment after `ZoneInit`, deferring `FurnitureList` chunks beyond index 2 until `FinishEstateRemodel { mode: 255 }`.
+pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, house_id: HouseId) {
+    let Some(estate) = prepare_active_indoor_estate_for_zone_init(connection, zone_id, house_id)
+    else {
+        tracing::info!(
+            zone_id,
+            house_id = u64::from(house_id),
+            "Indoor init fallback: no matching estate, finalizing empty interior"
+        );
         // Safe blank fallback for unseeded apartment lobby or unknown interior.
         connection
             .send_ipc_self(ServerZoneIpcSegment::new(
@@ -748,11 +766,7 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
     };
 
     let resolved_house_id = HouseId::from(estate.house_id as u64);
-    connection.housing_sim.active_estate = Some(build_selection_from_row(&estate, true));
-    connection.housing_sim.is_owner_authorized =
-        estate.owner_content_id == 0 || estate.owner_content_id == content_id as i64;
     rebuild_house_inventory_from_db(connection, &estate, true);
-    send_owned_housing(connection).await;
 
     let plot_size = PlotSize::from_repr(estate.plot_size.clamp(0, 2) as u8).unwrap_or_default();
     let stored_interior = StoredHouseInterior::from_json(&estate.interior_json);
@@ -793,8 +807,21 @@ pub async fn init_indoor_estate(connection: &mut ZoneConnection, zone_id: u16, h
 
     connection.housing_sim.pending_indoor_overlay_sync = true;
     connection.housing_sim.pending_indoor_finish_loading = false;
+    connection.housing_sim.pending_indoor_finish_loading_since = None;
 
-    if lists.len() > MAX_INITIAL_INDOOR_FURNITURE_LISTS {
+    let has_deferred_tail = lists.len() > MAX_INITIAL_INDOOR_FURNITURE_LISTS;
+    tracing::info!(
+        land_ident = estate.land_ident,
+        zone_id,
+        house_id = u64::from(resolved_house_id),
+        total_furniture = placed_rows.len(),
+        total_lists = lists.len(),
+        initial_lists = initial_count,
+        deferred = has_deferred_tail,
+        "Indoor init prepared furniture chunks"
+    );
+
+    if has_deferred_tail {
         connection.housing_sim.pending_indoor_furniture_list_tail =
             Some(lists[MAX_INITIAL_INDOOR_FURNITURE_LISTS..].to_vec());
     } else {
@@ -853,21 +880,30 @@ async fn finish_indoor_ready_sequence(
         .await;
 }
 
-/// Delivers deferred `FurnitureList` chunks (`3..`) when `FinishEstateRemodel { mode: 255 }` arrives, then releases deferred `FinishLoading`.
-pub async fn complete_deferred_indoor_tail_on_remodel(
-    connection: &mut ZoneConnection,
-    mode: u32,
-) -> bool {
-    if mode != 255 {
-        return false;
-    }
+/// Delivers deferred `FurnitureList` tail chunks (`3..`), ready packets, and any deferred `FinishLoading` sequence.
+async fn flush_deferred_indoor_tail(connection: &mut ZoneConnection, reason: &str) -> bool {
+    connection.housing_sim.pending_indoor_finish_loading_since = None;
     let Some(tail) = connection
         .housing_sim
         .pending_indoor_furniture_list_tail
         .take()
     else {
+        connection.housing_sim.pending_indoor_finish_loading = false;
         return false;
     };
+
+    let active_land_ident = connection
+        .housing_sim
+        .active_estate
+        .as_ref()
+        .map(|e| e.land_ident);
+    tracing::info!(
+        land_ident = active_land_ident,
+        tail_chunks = tail.len(),
+        pending_finish_loading = connection.housing_sim.pending_indoor_finish_loading,
+        reason,
+        "Flushing deferred indoor furniture tail"
+    );
 
     for list in tail {
         connection
@@ -937,11 +973,32 @@ pub async fn complete_deferred_indoor_tail_on_remodel(
 
         connection.send_stats().await;
         sync_current_overlays_for_connection(connection, TerritoryIntendedUse::HousingIndoor).await;
+        tracing::info!(
+            land_ident = active_land_ident,
+            reason,
+            "Completed deferred indoor FinishLoading sequence"
+        );
     } else {
         connection.housing_sim.pending_indoor_overlay_sync = true;
     }
 
     true
+}
+
+/// Delivers deferred `FurnitureList` chunks (`3..`) when `FinishEstateRemodel { mode: 255 }` arrives, then releases deferred `FinishLoading`.
+pub async fn complete_deferred_indoor_tail_on_remodel(
+    connection: &mut ZoneConnection,
+    mode: u32,
+) -> bool {
+    if mode != 255 {
+        return false;
+    }
+    flush_deferred_indoor_tail(connection, "finish_estate_remodel_255").await
+}
+
+/// Failsafe flush when a client holds deferred indoor furniture chunks past the timeout after `FinishLoading`.
+pub async fn flush_deferred_indoor_tail_on_timeout(connection: &mut ZoneConnection) -> bool {
+    flush_deferred_indoor_tail(connection, "finish_loading_timeout").await
 }
 
 /// Requests `server_main_loop` to replace interactive overlays (`HousingEventObject` & striking dummies) for the player's current scope.
@@ -1175,6 +1232,15 @@ pub async fn execute_housing_reload(
             .as_ref()
             .is_some_and(|a| a.land_ident == estate.land_ident);
 
+        if !same_estate && !force_enter {
+            tracing::debug!(
+                land_ident = ident,
+                zone_id = current_zone_id,
+                "Skipping indoor housing reload for non-active estate"
+            );
+            return;
+        }
+
         if mode == ReloadMode::LivePackets && same_territory && same_estate {
             push_indoor_live_refresh(connection, &estate).await;
             return;
@@ -1198,6 +1264,15 @@ pub async fn execute_housing_reload(
             .housing_sim
             .display_ward_context
             .is_some_and(|ctx| ctx.ward_index == estate.ward_index as u8);
+
+    if !in_same_ward && !force_enter {
+        tracing::debug!(
+            land_ident = ident,
+            zone_id = current_zone_id,
+            "Skipping outdoor housing reload outside target ward"
+        );
+        return;
+    }
 
     if in_same_ward && mode != ReloadMode::ZoneReload && !estate.is_apartment {
         // Push live outdoor appearance (476), FurnitureList, and interactive overlays with zero loading screen!

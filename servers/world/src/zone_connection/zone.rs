@@ -55,6 +55,7 @@ impl ZoneConnection {
         self.content_handler_id = handler_id;
         self.player_data.buyback_list = BuyBackList::default();
         self.synced_level = None;
+        self.housing_sim.clear_pending_indoor_load();
 
         let bound_by_duty = matches!(lua_zone.query, InstanceQuery::InstancedContent { .. });
 
@@ -127,6 +128,16 @@ impl ZoneConnection {
             actor_id: self.player_data.character.actor_id,
         }))
         .await;
+
+        if lua_zone.intended_use == TerritoryIntendedUse::HousingIndoor
+            && let InstanceQuery::House { house_id } = lua_zone.query
+        {
+            crate::housing_sim::flows::prepare_active_indoor_estate_for_zone_init(
+                self,
+                lua_zone.zone_id,
+                house_id,
+            );
+        }
 
         // Send owned housing list from persistent Housing Simulator DB
         crate::housing_sim::flows::send_owned_housing(self).await;
@@ -211,6 +222,7 @@ impl ZoneConnection {
                 territory_type: lua_zone.zone_id,
                 weather_id: lua_zone.weather_id,
                 flags,
+                unk1: 8.59375,
                 content_finder_condition_id: if let InstanceQuery::InstancedContent {
                     content_finder_condition_id,
                     ..

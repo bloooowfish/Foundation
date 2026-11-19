@@ -4809,6 +4809,11 @@ async fn client_loop(
     }
 
     while !disconnect {
+        let deferred_deadline = connection
+            .housing_sim
+            .pending_indoor_finish_loading_since
+            .map(|since| since + std::time::Duration::from_millis(1500));
+
         tokio::select! {
             biased; // client data should always be prioritized
             n = connection.socket.read(&mut buf) => {
@@ -4834,6 +4839,13 @@ async fn client_loop(
                 }
             }
             msg = internal_recv.recv() => process_server_msg(&mut connection, &mut lua_player, &mut events, client_handle.clone(), msg).await,
+            _ = async {
+                if let Some(deadline) = deferred_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                }
+            }, if deferred_deadline.is_some() => {
+                housing_sim::flows::flush_deferred_indoor_tail_on_timeout(&mut connection).await;
+            }
         }
     }
 

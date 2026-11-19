@@ -247,8 +247,8 @@ impl ZoneConnection {
 
     /// Sends multiple `ServerZoneIpcSegment` items addressed to self in bounded multi-segment packets.
     pub async fn send_ipcs_self(&mut self, ipcs: &[ServerZoneIpcSegment]) {
-        const MAX_SEGMENTS_PER_PACKET: usize = 64;
-        const MAX_BATCH_BYTES: usize = 16_384;
+        const MAX_SEGMENTS_PER_PACKET: usize = 16;
+        const MAX_BATCH_BYTES: usize = 8_192;
 
         let actor_id = self.player_data.character.actor_id;
         let mut batch = Vec::with_capacity(MAX_SEGMENTS_PER_PACKET);

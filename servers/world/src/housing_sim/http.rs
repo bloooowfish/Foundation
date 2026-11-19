@@ -764,7 +764,7 @@ async fn reset_estate_handler(
     hub.emit_event(HousingSseEvent {
         kind: "estate_reset".to_string(),
         land_ident: Some(land_ident),
-        message: format!("Reset estate {land_ident} (removed={removed_count})"),
+        message: format!("하우스 비우기 완료 (가구 {removed_count}개 제거)"),
         session: None,
     });
     if req.reload_mode != ReloadMode::None {

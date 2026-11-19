@@ -71,15 +71,28 @@ pub async fn try_handle_client_ipc(
 ) -> bool {
     match ipc {
         ClientZoneIpcData::FinishLoading { .. } => {
-            if connection
+            let zone_id = connection.player_data.volatile.zone_id as u16;
+            let has_deferred_tail = connection
                 .housing_sim
                 .pending_indoor_furniture_list_tail
-                .is_some()
+                .is_some();
+            if has_deferred_tail
+                || is_house_interior_territory(zone_id)
+                || is_apartment_territory(zone_id)
             {
+                tracing::info!(
+                    zone_id,
+                    has_deferred_tail,
+                    pending_overlay_sync = connection.housing_sim.pending_indoor_overlay_sync,
+                    "Client sent FinishLoading"
+                );
+            }
+            if has_deferred_tail {
                 connection.housing_sim.pending_indoor_finish_loading = true;
+                connection.housing_sim.pending_indoor_finish_loading_since =
+                    Some(tokio::time::Instant::now());
                 return true;
             }
-            let zone_id = connection.player_data.volatile.zone_id as u16;
             if connection.housing_sim.pending_indoor_overlay_sync
                 && (is_house_interior_territory(zone_id) || is_apartment_territory(zone_id))
             {
@@ -358,6 +371,16 @@ async fn handle_client_trigger(
             true
         }
         ClientTriggerCommand::FinishEstateRemodel { mode } => {
+            let zone_id = connection.player_data.volatile.zone_id as u16;
+            tracing::info!(
+                zone_id,
+                mode,
+                has_deferred_tail = connection
+                    .housing_sim
+                    .pending_indoor_furniture_list_tail
+                    .is_some(),
+                "Client sent FinishEstateRemodel"
+            );
             if complete_deferred_indoor_tail_on_remodel(connection, *mode).await {
                 return true;
             }
