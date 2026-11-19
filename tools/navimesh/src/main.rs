@@ -57,9 +57,16 @@ fn main() {
     // e.g. ffxiv/fst_f1/fld/f1f3/level/f1f3
     let bg_path = row.Bg;
     let name = row.Name;
+    if bg_path.to_string().trim().is_empty() {
+        tracing::warn!("Zone {zone_id} has empty Bg path; skipping navmesh generation.");
+        return;
+    }
 
     let path = format!("bg/{}.lvb", bg_path);
-    let lvb = resolver.parsed::<Lvb>(&path).unwrap();
+    let Ok(lvb) = resolver.parsed::<Lvb>(&path) else {
+        tracing::warn!("Zone {zone_id} missing level file {path:?}; skipping navmesh generation.");
+        return;
+    };
 
     let navimesh_sheet = RecastNavimeshSheet::read_from(&mut resolver, Language::None).unwrap();
     // Use default settings unless overriden
@@ -84,16 +91,32 @@ fn main() {
     let mut max_x = 0f32;
     let mut max_z = 0f32;
 
-    let scene = &lvb.sections[0];
+    let Some(scene) = lvb.sections.first() else {
+        tracing::warn!("Zone {zone_id} has no LVB sections; skipping navmesh generation.");
+        return;
+    };
+    if scene.general.bg_path.value.trim().is_empty() {
+        tracing::warn!(
+            "Zone {zone_id} has no bg_path collision data; skipping navmesh generation."
+        );
+        return;
+    }
 
-    let Pcb::List(pcblist) = resolver
-        .parsed::<Pcb>(&format!(
-            "{}/collision/list.pcb",
-            scene.general.bg_path.value
-        ))
-        .unwrap()
-    else {
-        panic!("list.pcb isn't a list?!");
+    let pcb_path = format!("{}/collision/list.pcb", scene.general.bg_path.value);
+    let pcblist = match resolver.parsed::<Pcb>(&pcb_path) {
+        Ok(Pcb::List(pcblist)) => pcblist,
+        Ok(_) => {
+            tracing::warn!(
+                "Zone {zone_id} collision file {pcb_path:?} is not a Pcb::List; skipping navmesh generation."
+            );
+            return;
+        }
+        Err(err) => {
+            tracing::warn!(
+                "Zone {zone_id} missing collision file {pcb_path:?} ({err:?}); skipping navmesh generation."
+            );
+            return;
+        }
     };
     min_x = min_x.min(pcblist.bounds.min[0]);
     min_z = min_z.min(pcblist.bounds.min[2]);

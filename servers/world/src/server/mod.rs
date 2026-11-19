@@ -189,18 +189,20 @@ impl WorldServer {
         ObjectId::default()
     }
 
-    /// Removes instances without players in them, which wastes resources.
+    /// Removes instances without players or active navmesh jobs.
     fn cleanup_dead_instances(&mut self) {
-        self.instances.retain(|instance| {
-            matches!(
-                instance.generate_navmesh,
-                NavmeshGenerationStep::None | NavmeshGenerationStep::Needed(..)
-            ) && instance
-                .actors
-                .iter()
-                .any(|x| matches!(x.1, NetworkedActor::Player { .. }))
-        });
+        self.instances.retain(should_retain_instance);
     }
+}
+
+fn should_retain_instance(instance: &Instance) -> bool {
+    matches!(
+        instance.generate_navmesh,
+        NavmeshGenerationStep::Started { .. }
+    ) || instance
+        .actors
+        .iter()
+        .any(|x| matches!(x.1, NetworkedActor::Player { .. }))
 }
 
 fn server_logic_tick(
@@ -679,7 +681,8 @@ fn server_logic_tick(
             }
 
             // generate navmesh if necessary
-            match &instance.generate_navmesh {
+            let mut navmesh_finished = false;
+            match &mut instance.generate_navmesh {
                 NavmeshGenerationStep::None => {}
                 NavmeshGenerationStep::Needed(nvm_path) => {
                     tracing::info!(
@@ -693,12 +696,14 @@ fn server_logic_tick(
                     // start navimesh generator
                     match Command::new(dir)
                         .arg(instance.zone.id.to_string())
-                        .arg(nvm_path)
+                        .arg(nvm_path.as_str())
                         .spawn()
                     {
-                        Ok(_) => {
-                            instance.generate_navmesh =
-                                NavmeshGenerationStep::Started(nvm_path.clone())
+                        Ok(child) => {
+                            instance.generate_navmesh = NavmeshGenerationStep::Started {
+                                nvm_path: nvm_path.clone(),
+                                child,
+                            };
                         }
                         Err(err) => {
                             tracing::error!(
@@ -708,20 +713,48 @@ fn server_logic_tick(
                         }
                     }
                 }
-                NavmeshGenerationStep::Started(nvm_path) => {
-                    if let Ok(nvm_bytes) = std::fs::read(nvm_path) {
-                        if let Some(navmesh) = Navmesh::from_existing(&nvm_bytes) {
-                            instance.navmesh = navmesh;
-
-                            tracing::info!("Successfully loaded navimesh from {nvm_path:?}");
+                NavmeshGenerationStep::Started { nvm_path, child } => match child.try_wait() {
+                    Ok(Some(status)) => {
+                        navmesh_finished = true;
+                        if status.success() {
+                            if let Ok(nvm_bytes) = std::fs::read(&*nvm_path) {
+                                if let Some(navmesh) = Navmesh::from_existing(&nvm_bytes) {
+                                    instance.navmesh = navmesh;
+                                    tracing::info!(
+                                        "Successfully loaded navimesh from {nvm_path:?}"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        "Failed to read {nvm_path:?}, monsters will not function correctly!"
+                                    );
+                                }
+                            } else {
+                                tracing::warn!(
+                                    zone_id = instance.zone.id,
+                                    "kawari-navimesh exited successfully without writing {nvm_path:?}"
+                                );
+                            }
                         } else {
                             tracing::warn!(
-                                "Failed to read {nvm_path:?}, monsters will not function correctly!"
+                                zone_id = instance.zone.id,
+                                status = %status,
+                                "kawari-navimesh exited without generating {nvm_path:?}; monsters will not use navmesh in this zone"
                             );
                         }
-                        instance.generate_navmesh = NavmeshGenerationStep::None;
                     }
-                }
+                    Ok(None) => {}
+                    Err(err) => {
+                        navmesh_finished = true;
+                        tracing::warn!(
+                            zone_id = instance.zone.id,
+                            error = %err,
+                            "Failed polling kawari-navimesh status for {nvm_path:?}"
+                        );
+                    }
+                },
+            }
+            if navmesh_finished {
+                instance.generate_navmesh = NavmeshGenerationStep::None;
             }
 
             // Process any director tasks for this instance.
@@ -2655,4 +2688,25 @@ pub async fn server_main_loop(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_dead_instances_retains_player_and_active_navmesh_instances() {
+        let mut empty = Instance::default();
+        assert!(!should_retain_instance(&empty));
+
+        empty.generate_navmesh = NavmeshGenerationStep::Needed("missing.nvm".to_string());
+        assert!(!should_retain_instance(&empty));
+
+        let mut with_player = Instance::default();
+        with_player.insert_empty_actor(ObjectId(1));
+        assert!(should_retain_instance(&with_player));
+
+        with_player.generate_navmesh = NavmeshGenerationStep::Needed("pending.nvm".to_string());
+        assert!(should_retain_instance(&with_player));
+    }
 }

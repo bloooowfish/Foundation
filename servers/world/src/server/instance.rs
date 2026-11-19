@@ -23,7 +23,7 @@ use crate::{
 use kawari::{
     common::{
         CharacterMode, DistanceRange, ENTRANCE_CIRCLE_IDS, FateState, HandlerId, HandlerType,
-        HouseId, MAXIMUM_FATES, MOB_WANDER_TIME, ObjectId, Position,
+        HouseId, MAXIMUM_FATES, MOB_WANDER_TIME, ObjectId, Position, TerritoryIntendedUse,
     },
     config::{Config, get_config},
     ipc::zone::{
@@ -40,8 +40,21 @@ pub enum NavmeshGenerationStep {
     None,
     /// We need to generate a navmesh at this path.
     Needed(String),
-    /// The process to write the navmesh has started, and we need to wait until the file exists.
-    Started(String),
+    /// The process to write the navmesh has started, and we wait for it to finish.
+    Started {
+        nvm_path: String,
+        child: std::process::Child,
+    },
+}
+
+/// Returns whether an instance with the given `TerritoryIntendedUse` needs a navigation mesh.
+pub(crate) fn should_load_navmesh_for_intended_use(intended_use: TerritoryIntendedUse) -> bool {
+    !matches!(
+        intended_use,
+        TerritoryIntendedUse::HousingIndoor
+            | TerritoryIntendedUse::HousingOutdoor
+            | TerritoryIntendedUse::Inn
+    )
 }
 
 /// Query used to identify and create instances.
@@ -163,7 +176,13 @@ impl Instance {
         }
 
         let config = get_config();
-        if config.filesystem.navimesh_path.is_empty() {
+        if !should_load_navmesh_for_intended_use(instance.zone.intended_use) {
+            tracing::debug!(
+                zone_id = id,
+                intended_use = ?instance.zone.intended_use,
+                "Skipping navimesh loading for territory intended use"
+            );
+        } else if config.filesystem.navimesh_path.is_empty() {
             tracing::warn!("Navimesh path is not set! Monsters will not function correctly!");
         } else if instance.zone.navimesh_path.is_empty() {
             tracing::warn!("No navimesh path for this zone, skipping generation!");
@@ -726,5 +745,28 @@ mod tests {
 
         // Unique instances will never match against each other
         assert_ne!(InstanceQuery::UniqueInstance, InstanceQuery::UniqueInstance);
+    }
+
+    #[test]
+    fn skips_navmesh_for_housing_and_inn_territories() {
+        assert!(!should_load_navmesh_for_intended_use(
+            TerritoryIntendedUse::HousingIndoor
+        ));
+        assert!(!should_load_navmesh_for_intended_use(
+            TerritoryIntendedUse::HousingOutdoor
+        ));
+        assert!(!should_load_navmesh_for_intended_use(
+            TerritoryIntendedUse::Inn
+        ));
+
+        assert!(should_load_navmesh_for_intended_use(
+            TerritoryIntendedUse::Overworld
+        ));
+        assert!(should_load_navmesh_for_intended_use(
+            TerritoryIntendedUse::Dungeon
+        ));
+        assert!(should_load_navmesh_for_intended_use(
+            TerritoryIntendedUse::Town
+        ));
     }
 }

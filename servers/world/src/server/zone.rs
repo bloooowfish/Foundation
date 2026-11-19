@@ -1174,9 +1174,16 @@ pub fn handle_zone_messages(
 
             let mut data = data.lock();
 
-            // replace the connection's actor in the table
-            let instance = data.find_actor_instance_mut(*from_actor_id).unwrap();
-            *instance.find_actor_mut(*from_actor_id).unwrap() = NetworkedActor::Player {
+            let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
+                tracing::warn!(
+                    client_id = ?from_id,
+                    actor_id = ?from_actor_id,
+                    "Ignoring ZoneLoaded because actor is no longer attached to any instance"
+                );
+                return true;
+            };
+
+            let player_actor = NetworkedActor::Player {
                 spawn: player_spawn.clone(),
                 status_effects: StatusEffects::default(),
                 teleport_query: TeleportQuery::default(),
@@ -1192,6 +1199,18 @@ pub fn handle_zone_messages(
                 autoattack_target: None,
                 autoattack_timing: 0,
             };
+
+            if let Some(actor_slot) = instance.find_actor_mut(*from_actor_id) {
+                *actor_slot = player_actor;
+            } else {
+                tracing::warn!(
+                    client_id = ?from_id,
+                    actor_id = ?from_actor_id,
+                    zone_id = instance.zone.id,
+                    "Actor slot missing during ZoneLoaded; reinserting player actor into instance"
+                );
+                instance.actors.insert(*from_actor_id, player_actor);
+            }
 
             true
         }
