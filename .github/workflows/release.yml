@@ -1,0 +1,101 @@
+name: Release (Windows x64)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional version label written to version.txt'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-x64:
+    name: Build & Package (Windows x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build server workspace with Oodle feature
+        run: cargo build --release --workspace --exclude kawari-navimesh --features kawari/oodle
+
+      - name: Stage release bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $PWD 'stage'
+          $dist = Join-Path $PWD 'dist'
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
+          New-Item -ItemType Directory -Force -Path $stage, $dist | Out-Null
+
+          $bins = @(
+            'kawari-admin.exe',
+            'kawari-frontier.exe',
+            'kawari-lobby.exe',
+            'kawari-login.exe',
+            'kawari-patch.exe',
+            'kawari-run.exe',
+            'kawari-web.exe',
+            'kawari-world.exe'
+          )
+          foreach ($bin in $bins) {
+            $src = Join-Path 'target\release' $bin
+            if (-not (Test-Path $src)) {
+              throw "Missing built binary: $src"
+            }
+            Copy-Item -Path $src -Destination (Join-Path $stage $bin) -Force
+          }
+
+          Copy-Item -Path 'resources' -Destination (Join-Path $stage 'resources') -Recurse -Force
+          Copy-Item -Path 'LICENSE' -Destination (Join-Path $stage 'LICENSE') -Force
+          Copy-Item -Path 'README.md' -Destination (Join-Path $stage 'README.md') -Force
+
+          $ver = '${{ inputs.release_tag }}'
+          if ([string]::IsNullOrWhiteSpace($ver)) {
+            $refName = '${{ github.ref_name }}'
+            if ($refName.StartsWith('v')) {
+              $ver = $refName
+            } else {
+              $ver = '${{ github.sha }}'.Substring(0, 8)
+            }
+          }
+          Set-Content -Path (Join-Path $stage 'version.txt') -Value $ver -NoNewline -Encoding UTF8
+
+          # Never bundle proprietary DLLs, user config.yaml, or local DBs
+          Get-ChildItem -Path $stage -Recurse -Include 'oodle-network-shared.dll','config.yaml','*.db' -Force | Remove-Item -Force
+
+          $zipPath = Join-Path $dist 'foundation-windows-x64.zip'
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
+
+          $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path (Join-Path $dist 'SHA256SUMS.txt') -Value "$hash  foundation-windows-x64.zip" -Encoding UTF8
+          Write-Host "Packaged $zipPath (sha256: $hash)"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundation-windows-x64
+          path: dist/
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/foundation-windows-x64.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
