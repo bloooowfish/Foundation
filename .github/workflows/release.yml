@@ -61,6 +61,10 @@ jobs:
           }
 
           Copy-Item -Path 'resources' -Destination (Join-Path $stage 'resources') -Recurse -Force
+          $testFixtures = Join-Path $stage 'resources\data\tests'
+          if (Test-Path $testFixtures) {
+            Remove-Item -Path $testFixtures -Recurse -Force
+          }
           Copy-Item -Path 'LICENSE' -Destination (Join-Path $stage 'LICENSE') -Force
           Copy-Item -Path 'README.md' -Destination (Join-Path $stage 'README.md') -Force
 
