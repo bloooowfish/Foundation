@@ -290,7 +290,11 @@ async fn handle_client_trigger(
                 };
                 if let Some(est) = est {
                     rebuild_house_inventory_from_db(connection, &est, indoors);
+                } else {
+                    connection.player_data.house_inventory = Default::default();
                 }
+            } else {
+                connection.player_data.house_inventory = Default::default();
             }
             let which = match (indoors, *storeroom) {
                 (true, false) => DesiredHousingInventoryPages::Interior,
@@ -2576,6 +2580,28 @@ pub(crate) fn handle_server_housing_message(
                 ));
             }
         }
+        HousingSimToServer::NotifyClientsEstateDeleted {
+            land_ident,
+            territory_type_id,
+            ward_index,
+            division,
+            plot_index,
+            is_apartment,
+        } => {
+            let mut network = network.lock();
+            for (handle, _state) in network.clients.values_mut() {
+                let _ = handle.send(FromServer::HousingSim(
+                    HousingSimFromServer::EstateDeleted {
+                        land_ident: *land_ident,
+                        territory_type_id: *territory_type_id,
+                        ward_index: *ward_index,
+                        division: *division,
+                        plot_index: *plot_index,
+                        is_apartment: *is_apartment,
+                    },
+                ));
+            }
+        }
         HousingSimToServer::UnlockClientSession { content_id } => {
             let mut network = network.lock();
             for (handle, _state) in network.clients.values_mut() {
@@ -2658,6 +2684,116 @@ pub async fn handle_from_server(connection: &mut ZoneConnection, sim_msg: &Housi
                     TerritoryIntendedUse::Town
                 };
                 publish_session_snapshot(connection, intended);
+            }
+        }
+        HousingSimFromServer::EstateDeleted {
+            land_ident,
+            territory_type_id,
+            ward_index,
+            division,
+            plot_index,
+            is_apartment,
+        } => {
+            if connection
+                .housing_sim
+                .pending_same_zone_indoor_reentry
+                .as_ref()
+                .is_some_and(|r| r.land_ident == *land_ident)
+            {
+                connection.housing_sim.clear_pending_indoor_reentry();
+            }
+
+            let was_active = connection
+                .housing_sim
+                .active_estate
+                .as_ref()
+                .is_some_and(|a| a.land_ident == *land_ident);
+            let current_zone_id = connection.player_data.volatile.zone_id as u16;
+            let currently_indoors = is_house_interior_territory(current_zone_id)
+                || is_apartment_territory(current_zone_id);
+            let in_same_ward_same_div = !currently_indoors
+                && current_zone_id == *territory_type_id
+                && connection
+                    .housing_sim
+                    .display_ward_context
+                    .is_some_and(|ctx| ctx.ward_index == *ward_index && ctx.division == *division);
+
+            if was_active {
+                connection.housing_sim.active_estate = None;
+                connection.housing_sim.is_owner_authorized = false;
+                connection.housing_sim.clear_pending_indoor_load();
+                connection.player_data.house_inventory = Default::default();
+                send_owned_housing(connection).await;
+
+                let current_intended = if currently_indoors {
+                    TerritoryIntendedUse::HousingIndoor
+                } else if kawari::common::internal_housing_row(current_zone_id).is_some() {
+                    TerritoryIntendedUse::HousingOutdoor
+                } else {
+                    TerritoryIntendedUse::Town
+                };
+                publish_session_snapshot(connection, current_intended);
+
+                if currently_indoors {
+                    connection
+                        .send_notice(
+                            "[Housing] Active estate was deleted; returning to residential ward.",
+                        )
+                        .await;
+                    if *is_apartment {
+                        warp_to_apartment_outdoor(
+                            connection,
+                            *territory_type_id,
+                            *ward_index,
+                            *division,
+                        )
+                        .await;
+                    } else {
+                        connection.entering_subdivision = *division != 0;
+                        connection
+                            .handle
+                            .send(ToServer::HousingSim(
+                                HousingSimToServer::WarpToHousingPlot {
+                                    client_id: connection.id,
+                                    actor_id: connection.player_data.character.actor_id,
+                                    territory_type_id: *territory_type_id,
+                                    ward_index: *ward_index,
+                                    division: *division,
+                                    plot_index: *plot_index,
+                                    override_pos: None,
+                                    override_rot: None,
+                                },
+                            ))
+                            .await;
+                    }
+                }
+            } else if connection
+                .housing_sim
+                .synced_indoor_state
+                .as_ref()
+                .is_some_and(|s| s.land_ident == *land_ident)
+            {
+                connection.housing_sim.synced_indoor_state = None;
+            }
+
+            if in_same_ward_same_div && !*is_apartment {
+                super::flows::init_outdoor_ward(connection, current_zone_id, *ward_index as u16)
+                    .await;
+                connection
+                    .handle
+                    .send(ToServer::HousingSim(
+                        HousingSimToServer::SyncScopeOverlays {
+                            actor_id: connection.player_data.character.actor_id,
+                            scope: super::overlays::HousingOverlayScope {
+                                indoors: false,
+                                ward_index: *ward_index,
+                                division: *division,
+                                plot_index: *plot_index,
+                            },
+                            objects: Vec::new(),
+                        },
+                    ))
+                    .await;
             }
         }
         HousingSimFromServer::ApplyLiveMoves {

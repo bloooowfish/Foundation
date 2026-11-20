@@ -177,12 +177,28 @@ fn housing_deadlines(connection: &ZoneConnection) -> (Option<Instant>, Option<In
     (deferred_deadline, reentry_deadline)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HousingDeadlineKind {
+    DeferredIndoorTail,
+    SameZoneIndoorReentry,
+}
+
+fn select_housing_deadline(
+    deferred_deadline: Option<Instant>,
+    reentry_deadline: Option<Instant>,
+) -> Option<(HousingDeadlineKind, Instant)> {
+    match (deferred_deadline, reentry_deadline) {
+        (Some(d), Some(r)) if d <= r => Some((HousingDeadlineKind::DeferredIndoorTail, d)),
+        (Some(_), Some(r)) => Some((HousingDeadlineKind::SameZoneIndoorReentry, r)),
+        (Some(d), None) => Some((HousingDeadlineKind::DeferredIndoorTail, d)),
+        (None, Some(r)) => Some((HousingDeadlineKind::SameZoneIndoorReentry, r)),
+        (None, None) => None,
+    }
+}
+
 pub fn next_housing_deadline(connection: &ZoneConnection) -> Option<Instant> {
     let (deferred_deadline, reentry_deadline) = housing_deadlines(connection);
-    match (deferred_deadline, reentry_deadline) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
+    select_housing_deadline(deferred_deadline, reentry_deadline).map(|(_, d)| d)
 }
 
 pub async fn sleep_until_optional(deadline: Option<Instant>) {
@@ -194,11 +210,28 @@ pub async fn sleep_until_optional(deadline: Option<Instant>) {
 pub async fn handle_housing_deadline(connection: &mut ZoneConnection) {
     let (deferred_deadline, reentry_deadline) = housing_deadlines(connection);
     let now = Instant::now();
+    let mut fired = false;
     if deferred_deadline.is_some_and(|deadline| now >= deadline) {
         super::flows::flush_deferred_indoor_tail_on_timeout(connection).await;
+        fired = true;
     }
     if reentry_deadline.is_some_and(|deadline| now >= deadline) {
         super::flows::complete_pending_same_zone_indoor_reentry(connection).await;
+        fired = true;
+    }
+    if !fired && let Some((kind, _)) = select_housing_deadline(deferred_deadline, reentry_deadline)
+    {
+        // Tokio's timer wheel can finish `sleep_until` while `Instant::now()` still trails
+        // `deadline` under backward clock skew (tokio#3619); always disarm the earliest
+        // armed deadline so `client_loop` cannot spin.
+        match kind {
+            HousingDeadlineKind::DeferredIndoorTail => {
+                super::flows::flush_deferred_indoor_tail_on_timeout(connection).await;
+            }
+            HousingDeadlineKind::SameZoneIndoorReentry => {
+                super::flows::complete_pending_same_zone_indoor_reentry(connection).await;
+            }
+        }
     }
 }
 
@@ -347,5 +380,35 @@ pub(crate) fn poll_started_navmesh_generation(
             );
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_housing_deadline_picks_earliest_and_disarms_deterministic_tie() {
+        let base = Instant::now();
+        let earlier = base + Duration::from_millis(250);
+        let later = base + Duration::from_millis(1500);
+
+        assert_eq!(select_housing_deadline(None, None), None);
+        assert_eq!(
+            select_housing_deadline(Some(later), None),
+            Some((HousingDeadlineKind::DeferredIndoorTail, later))
+        );
+        assert_eq!(
+            select_housing_deadline(None, Some(earlier)),
+            Some((HousingDeadlineKind::SameZoneIndoorReentry, earlier))
+        );
+        assert_eq!(
+            select_housing_deadline(Some(later), Some(earlier)),
+            Some((HousingDeadlineKind::SameZoneIndoorReentry, earlier))
+        );
+        assert_eq!(
+            select_housing_deadline(Some(earlier), Some(earlier)),
+            Some((HousingDeadlineKind::DeferredIndoorTail, earlier))
+        );
     }
 }

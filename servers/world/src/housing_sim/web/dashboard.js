@@ -139,6 +139,11 @@
     selectedFurnSlot: null,
     transformDraft: null,
     transformOriginal: null,
+    transformDirty: false,
+    envDirty: { light: false, style: false, meta: false, memo: false },
+    pendingConfirm: false,
+    detailReqSeq: 0,
+    bridgeReqSeq: 0,
     liveMoveTimer: null,
     sseRefreshTimer: null,
     logs: [],
@@ -147,6 +152,45 @@
   };
 
   const $ = (id) => document.getElementById(id);
+
+  function resetEnvDirty() {
+    state.envDirty.light = false;
+    state.envDirty.style = false;
+    state.envDirty.meta = false;
+    state.envDirty.memo = false;
+  }
+
+  function cancelPendingLiveMove() {
+    if (state.liveMoveTimer !== null) {
+      clearTimeout(state.liveMoveTimer);
+      state.liveMoveTimer = null;
+    }
+  }
+
+  function wrapDegrees(deg) {
+    const num = Number(deg);
+    if (!Number.isFinite(num)) return 0;
+    const wrapped = ((((num + 180) % 360) + 360) % 360) - 180;
+    return (wrapped === -180 && num > 0) ? 180 : wrapped;
+  }
+
+  async function runBusy(el, fn) {
+    if (el && el.dataset) {
+      if (el.dataset.busy === '1') return;
+      el.dataset.busy = '1';
+      el.disabled = true;
+    }
+    try {
+      return await fn();
+    } finally {
+      if (el && el.dataset) {
+        delete el.dataset.busy;
+        el.disabled = false;
+      }
+      renderSidebarSelected();
+      syncEnvironmentButtonStates(getSelectedEstate());
+    }
+  }
 
   function loadPrefs() {
     try {
@@ -202,6 +246,11 @@
   }
 
   function askConfirm(title, message) {
+    if (state.pendingConfirm) {
+      return Promise.resolve(false);
+    }
+    state.pendingConfirm = true;
+    const prevFocus = document.activeElement;
     return new Promise((resolve) => {
       const modal = $('confirmModal');
       $('confirmModalTitle').textContent = title;
@@ -213,6 +262,11 @@
         $('confirmModalOk').removeEventListener('click', onOk);
         $('confirmModalCancel').removeEventListener('click', onCancel);
         modal.removeEventListener('click', onBackdrop);
+        document.removeEventListener('keydown', onKeyDown);
+        state.pendingConfirm = false;
+        if (prevFocus && typeof prevFocus.focus === 'function' && prevFocus.isConnected) {
+          prevFocus.focus();
+        }
         resolve(answer);
       };
       const onOk = () => cleanup(true);
@@ -220,10 +274,18 @@
       const onBackdrop = (ev) => {
         if (ev.target === modal) cleanup(false);
       };
+      const onKeyDown = (ev) => {
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          cleanup(false);
+        }
+      };
 
       $('confirmModalOk').addEventListener('click', onOk);
       $('confirmModalCancel').addEventListener('click', onCancel);
       modal.addEventListener('click', onBackdrop);
+      document.addEventListener('keydown', onKeyDown);
+      $('confirmModalCancel').focus();
     });
   }
 
@@ -347,12 +409,12 @@
   function normalizePresetSize(rawSize) {
     const s = String(rawSize || '').trim().toLowerCase();
     if (!s) return { plotSize: null, isApartment: false, badge: '미상' };
-    if (s.includes('apart') || s.includes('chamber') || s.includes('fc') || s.includes('room')) {
+    if (/\b(apart(ment)?|chamber|fc\s*room|private\s*room|room)\b/i.test(s) || s === 'apt') {
       return { plotSize: 0, isApartment: true, badge: '아파트' };
     }
-    if (s.includes('small') || s.includes('cottage')) return { plotSize: 0, isApartment: false, badge: '소형' };
-    if (s.includes('medium') || s.includes('house')) return { plotSize: 1, isApartment: false, badge: '중형' };
-    if (s.includes('large') || s.includes('mansion')) return { plotSize: 2, isApartment: false, badge: '대형' };
+    if (s === 'l' || s.includes('large') || s.includes('mansion')) return { plotSize: 2, isApartment: false, badge: '대형' };
+    if (s === 's' || s.includes('small') || s.includes('cottage')) return { plotSize: 0, isApartment: false, badge: '소형' };
+    if (s === 'm' || s.includes('medium') || s.includes('house')) return { plotSize: 1, isApartment: false, badge: '중형' };
     return { plotSize: null, isApartment: false, badge: rawSize };
   }
 
@@ -401,10 +463,15 @@
     return lines;
   }
 
-  function parseLocalPresetFile(fileName, rawJson, lastModifiedMs) {
-    const id = `local:${fileName}`;
+  function parseLocalPresetFile(fileName, rawJson, lastModifiedMs, relativePath = '') {
+    const key = relativePath || fileName;
+    const id = `local:${key}`;
+    const title = key.replace(/\.json$/i, '');
     try {
       const parsed = JSON.parse(rawJson);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('JSON 최상위 구조가 객체({})가 아닙니다.');
+      }
       const sizeInfo = normalizePresetSize(parsed.houseSize);
       const intFixtures = Array.isArray(parsed.interiorFixture) ? parsed.interiorFixture : [];
       const extFixtures = Array.isArray(parsed.exteriorFixture) ? parsed.exteriorFixture : [];
@@ -416,7 +483,7 @@
         id,
         sourceKind: '로컬',
         name: fileName,
-        title: fileName.replace(/\.json$/i, ''),
+        title,
         rawJson,
         serverPath: null,
         houseSizeRaw: parsed.houseSize || '',
@@ -442,7 +509,7 @@
         id,
         sourceKind: '로컬',
         name: fileName,
-        title: fileName.replace(/\.json$/i, ''),
+        title,
         rawJson,
         serverPath: null,
         sizeBadge: '오류',
@@ -533,6 +600,17 @@
       };
     }
 
+    if (cap.outdoor !== null && preset.outdoorCount > cap.outdoor) {
+      const reason = row.is_apartment
+        ? `아파트는 정원 가구(${preset.outdoorCount}개)를 배치할 수 없습니다.`
+        : `정원 가구(${preset.outdoorCount}개)가 상한(${cap.outdoor}개)을 초과해 일부 잘릴 수 있습니다.`;
+      return {
+        status: 'warn',
+        mismatch: false,
+        text: `크기 일치 [${targetBadge}], 단 ${reason}`,
+      };
+    }
+
     return {
       status: 'match',
       mismatch: false,
@@ -541,6 +619,18 @@
   }
 
   // ---- Navigation & Selection ----
+
+  function clearSelectionTransientState({ cancelTimer = true } = {}) {
+    if (cancelTimer) cancelPendingLiveMove();
+    state.selectedEstateDetail = null;
+    state.bridgeSnapshot = null;
+    state.selectedFurnSlot = null;
+    state.transformDraft = null;
+    state.transformOriginal = null;
+    state.transformDirty = false;
+    resetEnvDirty();
+    $('presetPreviewReport').classList.add('hidden');
+  }
 
   function switchTab(tabName) {
     state.activeTab = tabName;
@@ -553,31 +643,35 @@
     });
 
     if (tabName === 'furniture' && state.selectedLandIdent) {
-      refreshBridgeSnapshot();
+      refreshBridgeSnapshot({ forceSyncDraft: !state.transformDirty });
     } else if (tabName === 'environment' && state.selectedLandIdent) {
       refreshEstateDetail();
     }
   }
 
   async function selectEstate(landIdent, loadSubViews = true) {
+    if (landIdent !== state.selectedLandIdent) {
+      clearSelectionTransientState();
+    }
     state.selectedLandIdent = landIdent;
     renderAll();
 
     if (!landIdent || !loadSubViews) return;
     if (state.activeTab === 'furniture') {
-      await refreshBridgeSnapshot();
+      await refreshBridgeSnapshot({ forceSyncDraft: true });
     } else if (state.activeTab === 'environment') {
-      await refreshEstateDetail();
+      await refreshEstateDetail({ forceSync: true });
     } else {
       // Load detail silently so snapshot count stays fresh in sidebar badge.
-      await refreshEstateDetail({ silent: true });
+      await refreshEstateDetail({ silent: true, forceSync: true });
     }
   }
 
   // ---- Data Fetching ----
 
-  async function refreshAll(preferredLandIdent = null) {
+  async function refreshAll(preferredLandIdent = null, { forceSync = false } = {}) {
     try {
+      const prevIdent = state.selectedLandIdent;
       const [status, estates, presetsResp] = await Promise.all([
         apiJson('/status'),
         apiJson('/estates'),
@@ -593,9 +687,13 @@
         ? presetsResp.files.map(mapServerPreset)
         : [];
 
+      const activeIdent = state.primarySession?.active_estate?.land_ident ?? null;
+      const validActiveIdent = activeIdent !== null && state.estates.some((e) => e.row.land_ident === activeIdent)
+        ? activeIdent
+        : null;
       const desiredIdent = preferredLandIdent
         ?? state.selectedLandIdent
-        ?? state.primarySession?.active_estate?.land_ident
+        ?? validActiveIdent
         ?? state.estates[0]?.row.land_ident
         ?? null;
 
@@ -605,23 +703,29 @@
         state.selectedLandIdent = state.estates[0]?.row.land_ident ?? null;
       }
 
+      if (state.selectedLandIdent !== prevIdent || !state.selectedLandIdent) {
+        clearSelectionTransientState();
+      } else if (forceSync) {
+        state.transformDirty = false;
+        resetEnvDirty();
+      }
+
       const allPresets = getAllPresets();
       if (!allPresets.some((p) => p.id === state.selectedPresetId)) {
         state.selectedPresetId = allPresets[0]?.id ?? null;
       }
 
-      renderAll();
+      renderAll({ forceSync });
 
       if (state.selectedLandIdent) {
         if (state.activeTab === 'furniture') {
-          await refreshBridgeSnapshot();
+          await refreshBridgeSnapshot({ forceSyncDraft: forceSync || !state.transformDirty });
         } else {
-          await refreshEstateDetail({ silent: true });
+          await refreshEstateDetail({ silent: true, forceSync });
         }
       } else {
-        state.selectedEstateDetail = null;
-        state.bridgeSnapshot = null;
-        renderAll();
+        clearSelectionTransientState();
+        renderAll({ forceSync: true });
       }
     } catch (err) {
       toast(`상태 불러오기 실패: ${err.message}`, true);
@@ -630,35 +734,46 @@
 
   async function refreshEstatesOnly() {
     try {
+      const prevIdent = state.selectedLandIdent;
       const estates = await apiJson('/estates');
       state.estates = Array.isArray(estates) ? estates : [];
       if (!state.estates.some((e) => e.row.land_ident === state.selectedLandIdent)) {
-        state.selectedLandIdent = state.primarySession?.active_estate?.land_ident
+        const activeIdent = state.primarySession?.active_estate?.land_ident ?? null;
+        const validActiveIdent = activeIdent !== null && state.estates.some((e) => e.row.land_ident === activeIdent)
+          ? activeIdent
+          : null;
+        state.selectedLandIdent = validActiveIdent
           ?? state.estates[0]?.row.land_ident
           ?? null;
       }
+      if (state.selectedLandIdent !== prevIdent || !state.selectedLandIdent) {
+        clearSelectionTransientState();
+      }
       renderAll();
       if (state.selectedLandIdent) {
-        if (state.activeTab === 'furniture') await refreshBridgeSnapshot();
-        if (state.activeTab === 'environment') await refreshEstateDetail({ silent: true });
+        if (state.activeTab === 'furniture') await refreshBridgeSnapshot({ forceSyncDraft: false });
+        if (state.activeTab === 'environment') await refreshEstateDetail({ silent: true, forceSync: false });
       }
     } catch (err) {
       toast(`하우스 목록 갱신 실패: ${err.message}`, true);
     }
   }
 
-  async function refreshEstateDetail({ silent = false } = {}) {
-    if (!state.selectedLandIdent) {
+  async function refreshEstateDetail({ silent = false, forceSync = false } = {}) {
+    const reqIdent = state.selectedLandIdent;
+    const seq = ++state.detailReqSeq;
+    if (!reqIdent) {
       state.selectedEstateDetail = null;
-      renderEnvironment();
+      renderEnvironment({ forceSync: true });
       renderSidebarSelected();
       return;
     }
     try {
-      const detail = await apiJson(`/estates/${state.selectedLandIdent}`);
-      if (detail?.estate?.land_ident === state.selectedLandIdent) {
+      const detail = await apiJson(`/estates/${reqIdent}`);
+      if (seq !== state.detailReqSeq || state.selectedLandIdent !== reqIdent) return;
+      if (detail?.estate?.land_ident === reqIdent) {
         state.selectedEstateDetail = detail;
-        renderEnvironment();
+        renderEnvironment({ forceSync });
         renderSidebarSelected();
       }
     } catch (err) {
@@ -666,21 +781,24 @@
     }
   }
 
-  async function refreshBridgeSnapshot() {
-    if (!state.selectedLandIdent) {
+  async function refreshBridgeSnapshot({ silent = false, forceSyncDraft = false } = {}) {
+    const reqIdent = state.selectedLandIdent;
+    const seq = ++state.bridgeReqSeq;
+    if (!reqIdent) {
       state.bridgeSnapshot = null;
       renderFurniture();
       return;
     }
     try {
-      const snap = await apiJson(`/estates/${state.selectedLandIdent}/bridge/snapshot`);
-      if (snap?.land_ident === state.selectedLandIdent) {
+      const snap = await apiJson(`/estates/${reqIdent}/bridge/snapshot`);
+      if (seq !== state.bridgeReqSeq || state.selectedLandIdent !== reqIdent) return;
+      if (snap?.land_ident === reqIdent) {
         state.bridgeSnapshot = snap;
-        syncSelectedFurnitureIntoDraft();
+        syncSelectedFurnitureIntoDraft({ force: forceSyncDraft });
         renderFurniture();
       }
     } catch (err) {
-      toast(`가구 목록 조회 실패: ${err.message}`, true);
+      if (!silent) toast(`가구 목록 조회 실패: ${err.message}`, true);
     }
   }
 
@@ -720,7 +838,7 @@
     setSseConnected(true);
 
     if (evt.kind === 'session_offline') {
-      state.primarySession = null;
+      state.primarySession = evt.session || null;
       renderSessionHeader();
       renderEstates();
       if (evt.message) pushLog(evt);
@@ -783,13 +901,13 @@
 
   // ---- Renderers ----
 
-  function renderAll() {
+  function renderAll({ forceSync = false } = {}) {
     renderSessionHeader();
     renderSidebarSelected();
     renderEstates();
     renderPresets();
     renderFurniture();
-    renderEnvironment();
+    renderEnvironment({ forceSync });
     renderLogs();
   }
 
@@ -847,7 +965,7 @@
       <span class="badge badge-muted">정원 ${est.outdoor_count}</span>
       <span class="badge badge-muted">스냅샷 ${snapCount}</span>
     `;
-    btnIds.forEach((id) => { $(id).disabled = false; });
+    btnIds.forEach((id) => { $(id).disabled = $(id).dataset.busy === '1'; });
   }
 
   function getFilteredSortedEstates() {
@@ -1092,17 +1210,18 @@
   }
 
   function getActiveFurnitureList() {
-    if (!state.bridgeSnapshot) return [];
+    if (!state.bridgeSnapshot || state.bridgeSnapshot.land_ident !== state.selectedLandIdent) return [];
     return state.furnScope === 'indoor' ? (state.bridgeSnapshot.indoor || []) : (state.bridgeSnapshot.outdoor || []);
   }
 
-  function syncSelectedFurnitureIntoDraft() {
+  function syncSelectedFurnitureIntoDraft({ force = true } = {}) {
     const list = getActiveFurnitureList();
     const item = list.find((f) => f.flat_slot === state.selectedFurnSlot) || null;
     if (!item) {
       state.selectedFurnSlot = null;
       state.transformDraft = null;
       state.transformOriginal = null;
+      state.transformDirty = false;
       return;
     }
     const usePlotLocal = state.furnScope === 'outdoor' && $('tfPlotLocal').checked;
@@ -1110,14 +1229,17 @@
       x: usePlotLocal ? item.local_x : item.pos_x,
       y: usePlotLocal ? item.local_y : item.pos_y,
       z: usePlotLocal ? item.local_z : item.pos_z,
-      rotDeg: ((usePlotLocal ? item.local_rotation : item.rotation) * 180) / Math.PI,
+      rotDeg: wrapDegrees(((usePlotLocal ? item.local_rotation : item.rotation) * 180) / Math.PI),
     };
-    state.transformDraft = { ...coords };
     state.transformOriginal = { ...coords };
+    if (force || !state.transformDraft || !state.transformDirty) {
+      state.transformDraft = { ...coords };
+      state.transformDirty = false;
+    }
   }
 
   function renderFurniture() {
-    const snap = state.bridgeSnapshot;
+    const snap = state.bridgeSnapshot?.land_ident === state.selectedLandIdent ? state.bridgeSnapshot : null;
     const indoorList = snap?.indoor || [];
     const outdoorList = snap?.outdoor || [];
     $('furnIndoorCount').textContent = indoorList.length;
@@ -1153,7 +1275,7 @@
         const x = usePlotLocal ? item.local_x : item.pos_x;
         const y = usePlotLocal ? item.local_y : item.pos_y;
         const z = usePlotLocal ? item.local_z : item.pos_z;
-        const deg = (((usePlotLocal ? item.local_rotation : item.rotation) * 180) / Math.PI);
+        const deg = wrapDegrees(((usePlotLocal ? item.local_rotation : item.rotation) * 180) / Math.PI);
         const cleanHex = item.color_hex ? String(item.color_hex).replace(/^#/, '').slice(0, 6) : '';
         const swatch = /^[0-9a-fA-F]{6}$/.test(cleanHex)
           ? `<span class="swatch" style="background:#${cleanHex}"></span>`
@@ -1178,6 +1300,11 @@
       $('tfItemName').textContent = '가구를 선택하세요';
       $('tfItemMeta').textContent = '왼쪽 표에서 가구 행을 클릭하면 실시간 좌표·회전 조절기가 열립니다.';
       $('tfSlotBadge').textContent = '-';
+      $('tfPosX').value = '';
+      $('tfPosY').value = '';
+      $('tfPosZ').value = '';
+      $('tfRotDeg').value = '';
+      $('tfRotSlider').value = 0;
       $('btnTfRevert').disabled = true;
       $('btnTfCommit').disabled = true;
       return;
@@ -1186,38 +1313,102 @@
     $('tfItemName').textContent = activeItem.name;
     $('tfItemMeta').textContent = `Item #${activeItem.item_id} · Catalog #${activeItem.catalog_id}`;
     $('tfSlotBadge').textContent = `${state.furnScope === 'indoor' ? '실내' : '정원'} #${activeItem.flat_slot}`;
-    $('tfPosX').value = state.transformDraft.x.toFixed(3);
-    $('tfPosY').value = state.transformDraft.y.toFixed(3);
-    $('tfPosZ').value = state.transformDraft.z.toFixed(3);
-    $('tfRotDeg').value = state.transformDraft.rotDeg.toFixed(1);
-    $('tfRotSlider').value = Math.max(-180, Math.min(180, state.transformDraft.rotDeg));
+    if (document.activeElement !== $('tfPosX')) $('tfPosX').value = state.transformDraft.x.toFixed(3);
+    if (document.activeElement !== $('tfPosY')) $('tfPosY').value = state.transformDraft.y.toFixed(3);
+    if (document.activeElement !== $('tfPosZ')) $('tfPosZ').value = state.transformDraft.z.toFixed(3);
+    if (document.activeElement !== $('tfRotDeg')) $('tfRotDeg').value = state.transformDraft.rotDeg.toFixed(1);
+    if (document.activeElement !== $('tfRotSlider')) {
+      $('tfRotSlider').value = Math.max(-180, Math.min(180, state.transformDraft.rotDeg));
+    }
     $('btnTfRevert').disabled = false;
-    $('btnTfCommit').disabled = false;
+    $('btnTfCommit').disabled = $('btnTfCommit').dataset.busy === '1';
   }
 
-  function renderEnvironment() {
-    const detail = state.selectedEstateDetail;
+  const ENV_ACTION_BUTTON_IDS = [
+    'btnEnvSaveLight',
+    'btnEnvApplyStyle',
+    'btnEnvSaveMeta',
+    'btnEnvSaveMemo',
+    'btnResetIndoor',
+    'btnResetExterior',
+    'btnResetAll',
+    'btnEnvForceReload',
+    'btnDeleteEstate',
+    'btnSnapshotCreate',
+    'btnSnapshotUndo',
+  ];
+
+  function syncEnvironmentButtonStates(estSummary) {
+    if (!estSummary) {
+      $('envStyleSelect').disabled = true;
+      ENV_ACTION_BUTTON_IDS.forEach((id) => {
+        const el = $(id);
+        if (el) el.disabled = true;
+      });
+      return;
+    }
+    const isApt = !!estSummary.row.is_apartment;
+    $('envStyleSelect').disabled = isApt;
+    ENV_ACTION_BUTTON_IDS.forEach((id) => {
+      const el = $(id);
+      if (!el) return;
+      if (id === 'btnEnvApplyStyle') {
+        el.disabled = isApt || el.dataset.busy === '1';
+      } else {
+        el.disabled = el.dataset.busy === '1';
+      }
+    });
+  }
+
+  function renderEnvironment({ forceSync = false } = {}) {
     const estSummary = getSelectedEstate();
     if (!estSummary) {
+      document.querySelectorAll('#envLightPills [data-light]').forEach((btn) => {
+        btn.classList.remove('active');
+      });
+      $('envSsaoCheck').checked = false;
+      $('envVisitorsCheck').checked = false;
+      $('envNameInput').value = '';
+      $('envGreetingInput').value = '';
+      $('envMemoInput').value = '';
+      $('envNameBytes').textContent = '0';
+      $('envGreetingBytes').textContent = '0';
       $('snapshotTimeline').innerHTML = '<div class="empty-state">하우스를 선택하면 스냅샷 목록이 표시됩니다.</div>';
       $('envFixturesContent').innerHTML = '';
+      syncEnvironmentButtonStates(null);
       return;
     }
 
+    syncEnvironmentButtonStates(estSummary);
+    const detail = state.selectedEstateDetail?.estate?.land_ident === estSummary.row.land_ident
+      ? state.selectedEstateDetail
+      : null;
     const row = detail?.estate || estSummary.row;
-    document.querySelectorAll('#envLightPills [data-light]').forEach((btn) => {
-      btn.classList.toggle('active', Number(btn.dataset.light) === row.light_level);
-    });
-    $('envSsaoCheck').checked = !!row.enable_ssao;
-    $('envVisitorsCheck').checked = (row.flags & 0x01) !== 0;
 
-    $('envStyleSelect').disabled = !!row.is_apartment;
-    $('btnEnvApplyStyle').disabled = !!row.is_apartment;
-    $('envStyleSelect').value = normalizeStyleKey(estSummary.pattern_name);
+    if (forceSync || !state.envDirty.light) {
+      document.querySelectorAll('#envLightPills [data-light]').forEach((btn) => {
+        btn.classList.toggle('active', Number(btn.dataset.light) === row.light_level);
+      });
+      $('envSsaoCheck').checked = !!row.enable_ssao;
+      $('envVisitorsCheck').checked = (row.flags & 0x01) !== 0;
+    }
 
-    $('envNameInput').value = row.estate_name || '';
-    $('envGreetingInput').value = row.greeting || '';
-    $('envMemoInput').value = state.memos[row.land_ident] || '';
+    if (forceSync || (!state.envDirty.style && document.activeElement !== $('envStyleSelect'))) {
+      $('envStyleSelect').value = normalizeStyleKey(estSummary.pattern_name);
+    }
+
+    if (
+      forceSync
+      || (!state.envDirty.meta
+        && document.activeElement !== $('envNameInput')
+        && document.activeElement !== $('envGreetingInput'))
+    ) {
+      $('envNameInput').value = row.estate_name || '';
+      $('envGreetingInput').value = row.greeting || '';
+    }
+    if (forceSync || (!state.envDirty.memo && document.activeElement !== $('envMemoInput'))) {
+      $('envMemoInput').value = state.memos[row.land_ident] || '';
+    }
     $('envNameBytes').textContent = utf8ByteLength($('envNameInput').value);
     $('envGreetingBytes').textContent = utf8ByteLength($('envGreetingInput').value);
 
@@ -1280,14 +1471,14 @@
 
   // ---- Actions ----
 
-  function buildCreateOrSwitchPayload(enterInterior) {
+  function buildCreateOrSwitchPayload(enterInterior, forEnsure = false) {
     const district = $('createDistrict').value;
-    const divisionRaw = Number($('createDivision').value) || 0;
+    const divisionRaw = Math.trunc(Number($('createDivision').value)) || 0;
     const sizeVal = $('createSize').value;
     const isApartment = sizeVal === 'apartment';
-    const plotSize = isApartment ? 0 : Number(sizeVal);
-    const wardHuman = Math.max(1, Math.min(30, Number($('createWard').value) || 1));
-    const plotOrRoomRaw = Number($('createPlotOrRoom').value);
+    const plotSize = isApartment ? 0 : Math.trunc(Number(sizeVal));
+    const wardHuman = Math.max(1, Math.min(30, Math.trunc(Number($('createWard').value)) || 1));
+    const plotOrRoomRaw = Math.trunc(Number($('createPlotOrRoom').value)) || 0;
 
     let division = divisionRaw;
     let plotIndex = null;
@@ -1315,22 +1506,26 @@
       is_apartment: isApartment,
       plot_size: (isApartment || plotIndex !== null) ? null : plotSize,
       estate_name: estateName,
-      owner_name: ownerName || state.primarySession?.character_name || 'Simulator',
-      owner_content_id: state.primarySession?.content_id || 1,
+      owner_name: forEnsure
+        ? (ownerName || state.primarySession?.character_name || 'Simulator')
+        : (ownerName || state.primarySession?.character_name || null),
+      owner_content_id: forEnsure
+        ? (state.primarySession?.content_id ?? 1)
+        : (state.primarySession?.content_id ?? null),
       enter_interior: enterInterior,
     };
   }
 
   async function ensureOnlyEstate() {
     try {
-      const payload = buildCreateOrSwitchPayload(true);
+      const payload = buildCreateOrSwitchPayload(true, true);
       const row = await apiJson('/estates/ensure', {
         method: 'POST',
         body: JSON.stringify(payload),
       });
       toast(`하우스 준비 완료: ${formatEstateLocation(row)}`);
       $('createEstatePanel').classList.add('hidden');
-      await refreshAll(row.land_ident);
+      await refreshAll(row.land_ident, { forceSync: true });
     } catch (err) {
       toast(`하우스 생성 실패: ${err.message}`, true);
     }
@@ -1338,14 +1533,19 @@
 
   async function switchWithCreateForm(enterInterior) {
     try {
-      const payload = buildCreateOrSwitchPayload(enterInterior);
+      const payload = buildCreateOrSwitchPayload(enterInterior, false);
       const res = await apiJson('/session/switch', {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      toast(`${enterInterior ? '실내 입장' : '정문 이동'} 완료: ${formatEstateLocation(res.estate)}`);
+      const loc = formatEstateLocation(res.estate);
+      if (res.online_sessions_notified === 0) {
+        toast(`하우스 준비 완료 (온라인 캐릭터 없음): ${loc}`);
+      } else {
+        toast(`${enterInterior ? '실내 입장' : '정문 이동'} 완료: ${loc}`);
+      }
       $('createEstatePanel').classList.add('hidden');
-      await refreshAll(res.estate.land_ident);
+      await refreshAll(res.estate.land_ident, { forceSync: true });
     } catch (err) {
       toast(`이동 실패: ${err.message}`, true);
     }
@@ -1357,11 +1557,47 @@
         method: 'POST',
         body: JSON.stringify({ land_ident: landIdent, enter_interior: enterInterior }),
       });
-      toast(`${enterInterior ? '실내 입장' : '정문 이동'} 완료: ${formatEstateLocation(res.estate)}`);
-      await refreshAll(res.estate.land_ident);
+      const loc = formatEstateLocation(res.estate);
+      if (res.online_sessions_notified === 0) {
+        toast(`활성 대상 지정 완료 (온라인 캐릭터 없음): ${loc}`);
+      } else {
+        toast(`${enterInterior ? '실내 입장' : '정문 이동'} 완료: ${loc}`);
+      }
+      await refreshAll(res.estate.land_ident, { forceSync: true });
     } catch (err) {
       toast(`워프 실패: ${err.message}`, true);
     }
+  }
+
+  async function reloadSelectedEstate(btn) {
+    if (!state.selectedLandIdent) return;
+    await runBusy(btn, async () => {
+      try {
+        await apiJson(`/estates/${state.selectedLandIdent}/reload`, {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'zone_reload', preserve_pos: true, force_enter: true }),
+        });
+        toast('강제 존 리로드를 전송했습니다.');
+      } catch (err) {
+        toast(`리로드 실패: ${err.message}`, true);
+      }
+    });
+  }
+
+  async function undoSelectedEstate(btn) {
+    if (!state.selectedLandIdent) return;
+    await runBusy(btn, async () => {
+      try {
+        const res = await apiJson(`/estates/${state.selectedLandIdent}/undo`, {
+          method: 'POST',
+          body: JSON.stringify({ reload_mode: 'auto', preserve_pos: true, source: 'web_ui' }),
+        });
+        toast(`실행 취소 완료 (#${res.id})`);
+        await refreshAll(state.selectedLandIdent, { forceSync: true });
+      } catch (err) {
+        toast(`실행 취소 실패: ${err.message}`, true);
+      }
+    });
   }
 
   async function resetEstateScope(landIdent, scope) {
@@ -1378,7 +1614,7 @@
         body: JSON.stringify({ scope, reload_mode: 'auto', source: 'web_ui' }),
       });
       toast(`${label} 초기화 완료 (제거된 가구 ${res.removed_count}개)`);
-      await refreshAll(landIdent);
+      await refreshAll(landIdent, { forceSync: true });
     } catch (err) {
       toast(`초기화 실패: ${err.message}`, true);
     }
@@ -1394,8 +1630,11 @@
     try {
       await apiJson(`/estates/${landIdent}`, { method: 'DELETE' });
       toast(`하우스 #${landIdent} 삭제 완료`);
-      if (state.selectedLandIdent === landIdent) state.selectedLandIdent = null;
-      await refreshAll();
+      if (state.selectedLandIdent === landIdent) {
+        state.selectedLandIdent = null;
+        clearSelectionTransientState();
+      }
+      await refreshAll(null, { forceSync: true });
     } catch (err) {
       toast(`삭제 실패: ${err.message}`, true);
     }
@@ -1410,7 +1649,7 @@
     const parsed = await Promise.all(files.map(async (f) => {
       const buf = await f.arrayBuffer();
       const text = decodeBufferWithBom(buf);
-      return parseLocalPresetFile(f.name, text, f.lastModified);
+      return parseLocalPresetFile(f.name, text, f.lastModified, f.webkitRelativePath || '');
     }));
 
     for (const item of parsed) {
@@ -1455,7 +1694,7 @@
         pos_x: Number(d.x),
         pos_y: Number(d.y),
         pos_z: Number(d.z),
-        rotation: (Number(d.rotDeg) * Math.PI) / 180,
+        rotation: (wrapDegrees(Number(d.rotDeg)) * Math.PI) / 180,
       }],
     };
     const res = await apiJson(`/estates/${state.selectedLandIdent}/live/move`, {
@@ -1463,15 +1702,17 @@
       body: JSON.stringify(payload),
     });
     if (commitDb) {
+      state.transformDirty = false;
       toast(`좌표 저장 및 RMP 동기화 완료 (rev ${res.revision})`);
-      await refreshBridgeSnapshot();
+      await refreshBridgeSnapshot({ forceSyncDraft: true });
     }
   }
 
   function scheduleLivePreview() {
     if (!$('tfAutoPreview').checked) return;
-    clearTimeout(state.liveMoveTimer);
+    cancelPendingLiveMove();
     state.liveMoveTimer = setTimeout(() => {
+      state.liveMoveTimer = null;
       dispatchLiveMove({ commitDb: false }).catch((err) => toast(`실시간 미리보기 오류: ${err.message}`, true));
     }, 80);
   }
@@ -1483,29 +1724,34 @@
       btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
 
-    $('btnRefreshAll').addEventListener('click', () => refreshAll(state.selectedLandIdent));
+    $('btnRefreshAll').addEventListener('click', () => refreshAll(state.selectedLandIdent, { forceSync: true }));
 
-    $('activeSessionPill').addEventListener('click', () => {
+    $('activeSessionPill').addEventListener('click', async () => {
       const ident = state.primarySession?.active_estate?.land_ident;
       if (!ident) {
         toast('현재 게임에서 활성화된 하우스가 없습니다.', true);
+        return;
+      }
+      if (!state.estates.some((e) => e.row.land_ident === ident)) {
+        toast('활성 하우스가 목록에 없습니다. 목록을 다시 불러옵니다.', true);
+        await refreshAll();
         return;
       }
       selectEstate(ident);
       toast('현재 게임 위치 하우스를 선택했습니다.');
     });
 
-    $('btnUnlockAll').addEventListener('click', async () => {
+    $('btnUnlockAll').addEventListener('click', () => runBusy($('btnUnlockAll'), async () => {
       try {
         const res = await apiJson('/session/unlock-all', { method: 'POST', body: '{}' });
         toast(`전체 해금 완료: ${res.unlocked_characters}명`);
       } catch (err) {
         toast(`해금 실패: ${err.message}`, true);
       }
-    });
+    }));
 
     document.querySelectorAll('[data-give-kit]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => runBusy(btn, async () => {
         try {
           const kind = btn.dataset.giveKit;
           const res = await apiJson('/session/give-kit', {
@@ -1516,44 +1762,25 @@
         } catch (err) {
           toast(`키트 지급 실패: ${err.message}`, true);
         }
-      });
+      }));
     });
 
     // Sidebar pinned quick buttons
-    $('sidebarBtnEnter').addEventListener('click', () => state.selectedLandIdent && warpToEstate(state.selectedLandIdent, true));
-    $('sidebarBtnExit').addEventListener('click', () => state.selectedLandIdent && warpToEstate(state.selectedLandIdent, false));
-    $('sidebarBtnReload').addEventListener('click', async () => {
-      if (!state.selectedLandIdent) return;
-      try {
-        await apiJson(`/estates/${state.selectedLandIdent}/reload`, {
-          method: 'POST',
-          body: JSON.stringify({ mode: 'zone_reload', preserve_pos: true, force_enter: true }),
-        });
-        toast('강제 존 리로드를 전송했습니다.');
-      } catch (err) {
-        toast(`리로드 실패: ${err.message}`, true);
-      }
+    $('sidebarBtnEnter').addEventListener('click', () => {
+      if (state.selectedLandIdent) runBusy($('sidebarBtnEnter'), () => warpToEstate(state.selectedLandIdent, true));
     });
-    $('sidebarBtnUndo').addEventListener('click', async () => {
-      if (!state.selectedLandIdent) return;
-      try {
-        const res = await apiJson(`/estates/${state.selectedLandIdent}/undo`, {
-          method: 'POST',
-          body: JSON.stringify({ reload_mode: 'auto', preserve_pos: true, source: 'web_ui' }),
-        });
-        toast(`실행 취소 완료 (#${res.id})`);
-        await refreshAll(state.selectedLandIdent);
-      } catch (err) {
-        toast(`실행 취소 실패: ${err.message}`, true);
-      }
+    $('sidebarBtnExit').addEventListener('click', () => {
+      if (state.selectedLandIdent) runBusy($('sidebarBtnExit'), () => warpToEstate(state.selectedLandIdent, false));
     });
+    $('sidebarBtnReload').addEventListener('click', () => reloadSelectedEstate($('sidebarBtnReload')));
+    $('sidebarBtnUndo').addEventListener('click', () => undoSelectedEstate($('sidebarBtnUndo')));
 
     // Estates view
     $('btnToggleCreateEstate').addEventListener('click', () => $('createEstatePanel').classList.toggle('hidden'));
     $('btnCloseCreateEstate').addEventListener('click', () => $('createEstatePanel').classList.add('hidden'));
-    $('btnCreateEnsureOnly').addEventListener('click', ensureOnlyEstate);
-    $('btnCreateAndEnter').addEventListener('click', () => switchWithCreateForm(true));
-    $('btnCreateAndOutside').addEventListener('click', () => switchWithCreateForm(false));
+    $('btnCreateEnsureOnly').addEventListener('click', () => runBusy($('btnCreateEnsureOnly'), ensureOnlyEstate));
+    $('btnCreateAndEnter').addEventListener('click', () => runBusy($('btnCreateAndEnter'), () => switchWithCreateForm(true)));
+    $('btnCreateAndOutside').addEventListener('click', () => runBusy($('btnCreateAndOutside'), () => switchWithCreateForm(false)));
 
     ['estatesSearchInput', 'estatesDistrictFilter', 'estatesSizeFilter', 'estatesSortSelect'].forEach((id) => {
       $(id).addEventListener('input', renderEstates);
@@ -1561,7 +1788,10 @@
     });
     $('btnEstatesFavOnly').addEventListener('click', () => {
       state.favoritesOnly = !state.favoritesOnly;
-      $('btnEstatesFavOnly').classList.toggle('btn-primary', state.favoritesOnly);
+      const favBtn = $('btnEstatesFavOnly');
+      favBtn.classList.toggle('btn-primary', state.favoritesOnly);
+      favBtn.classList.toggle('btn-secondary', !state.favoritesOnly);
+      favBtn.setAttribute('aria-pressed', String(state.favoritesOnly));
       renderEstates();
     });
     $('btnViewCards').addEventListener('click', () => { state.viewMode = 'cards'; savePrefs(); renderEstates(); });
@@ -1579,13 +1809,29 @@
         return;
       }
       const enterBtn = ev.target.closest('[data-enter-estate]');
-      if (enterBtn) { ev.stopPropagation(); warpToEstate(Number(enterBtn.dataset.enterEstate), true); return; }
+      if (enterBtn) {
+        ev.stopPropagation();
+        runBusy(enterBtn, () => warpToEstate(Number(enterBtn.dataset.enterEstate), true));
+        return;
+      }
       const exitBtn = ev.target.closest('[data-exit-estate]');
-      if (exitBtn) { ev.stopPropagation(); warpToEstate(Number(exitBtn.dataset.exitEstate), false); return; }
+      if (exitBtn) {
+        ev.stopPropagation();
+        runBusy(exitBtn, () => warpToEstate(Number(exitBtn.dataset.exitEstate), false));
+        return;
+      }
       const resetBtn = ev.target.closest('[data-reset-estate]');
-      if (resetBtn) { ev.stopPropagation(); resetEstateScope(Number(resetBtn.dataset.resetEstate), 'all'); return; }
+      if (resetBtn) {
+        ev.stopPropagation();
+        runBusy(resetBtn, () => resetEstateScope(Number(resetBtn.dataset.resetEstate), 'all'));
+        return;
+      }
       const delBtn = ev.target.closest('[data-delete-estate]');
-      if (delBtn) { ev.stopPropagation(); deleteEstate(Number(delBtn.dataset.deleteEstate)); return; }
+      if (delBtn) {
+        ev.stopPropagation();
+        runBusy(delBtn, () => deleteEstate(Number(delBtn.dataset.deleteEstate)));
+        return;
+      }
 
       const rowOrCard = ev.target.closest('[data-select-estate]');
       if (rowOrCard) {
@@ -1598,10 +1844,15 @@
       const val = Number(ev.target.value);
       if (val) selectEstate(val);
     });
-    $('btnPresetSyncActive').addEventListener('click', () => {
+    $('btnPresetSyncActive').addEventListener('click', async () => {
       const ident = state.primarySession?.active_estate?.land_ident;
       if (!ident) {
         toast('현재 게임에서 활성화된 하우스가 없습니다.', true);
+        return;
+      }
+      if (!state.estates.some((e) => e.row.land_ident === ident)) {
+        toast('활성 하우스가 목록에 없습니다. 목록을 다시 불러옵니다.', true);
+        await refreshAll();
         return;
       }
       selectEstate(ident);
@@ -1647,7 +1898,7 @@
       renderPresets();
     });
 
-    $('btnPreviewPreset').addEventListener('click', async () => {
+    $('btnPreviewPreset').addEventListener('click', () => runBusy($('btnPreviewPreset'), async () => {
       const preset = getSelectedPreset();
       const target = getSelectedEstate();
       if (!preset || !target) { toast('대상 하우스와 프리셋을 선택하세요.', true); return; }
@@ -1674,9 +1925,9 @@
       } catch (err) {
         toast(`검증 실패: ${err.message}`, true);
       }
-    });
+    }));
 
-    $('btnApplyPreset').addEventListener('click', async () => {
+    $('btnApplyPreset').addEventListener('click', () => runBusy($('btnApplyPreset'), async () => {
       const preset = getSelectedPreset();
       const target = getSelectedEstate();
       if (!preset || !target) { toast('대상 하우스와 프리셋을 선택하세요.', true); return; }
@@ -1691,13 +1942,13 @@
           body: JSON.stringify(buildPresetRequestBody(preset)),
         });
         toast(`적용 완료: 실내 ${res.preview.interior_resolved_count}, 정원 ${res.preview.exterior_resolved_count}`);
-        await refreshAll(target.row.land_ident);
+        await refreshAll(target.row.land_ident, { forceSync: true });
       } catch (err) {
         toast(`적용 실패: ${err.message}`, true);
       }
-    });
+    }));
 
-    $('btnExportDownload').addEventListener('click', async () => {
+    $('btnExportDownload').addEventListener('click', () => runBusy($('btnExportDownload'), async () => {
       if (!state.selectedLandIdent) { toast('하우스를 먼저 선택하세요.', true); return; }
       try {
         const scope = $('exportScopeSelect').value;
@@ -1714,9 +1965,9 @@
       } catch (err) {
         toast(`내보내기 실패: ${err.message}`, true);
       }
-    });
+    }));
 
-    $('btnExportSaveServer').addEventListener('click', async () => {
+    $('btnExportSaveServer').addEventListener('click', () => runBusy($('btnExportSaveServer'), async () => {
       if (!state.selectedLandIdent) { toast('하우스를 먼저 선택하세요.', true); return; }
       try {
         const res = await apiJson(`/estates/${state.selectedLandIdent}/export/remakeplace`, {
@@ -1731,24 +1982,84 @@
       } catch (err) {
         toast(`서버 저장 실패: ${err.message}`, true);
       }
-    });
+    }));
 
     // Furniture Inspector & Transform Editor
-    $('btnRefreshFurniture').addEventListener('click', refreshBridgeSnapshot);
+    $('btnRefreshFurniture').addEventListener('click', () => refreshBridgeSnapshot({ forceSyncDraft: true }));
     $('btnFurnScopeIndoor').addEventListener('click', () => {
+      cancelPendingLiveMove();
       state.furnScope = 'indoor';
       state.selectedFurnSlot = null;
-      syncSelectedFurnitureIntoDraft();
+      state.transformDirty = false;
+      syncSelectedFurnitureIntoDraft({ force: true });
       renderFurniture();
     });
     $('btnFurnScopeOutdoor').addEventListener('click', () => {
+      cancelPendingLiveMove();
       state.furnScope = 'outdoor';
       state.selectedFurnSlot = null;
-      syncSelectedFurnitureIntoDraft();
+      state.transformDirty = false;
+      syncSelectedFurnitureIntoDraft({ force: true });
       renderFurniture();
     });
     $('tfPlotLocal').addEventListener('change', () => {
-      syncSelectedFurnitureIntoDraft();
+      cancelPendingLiveMove();
+      const item = getActiveFurnitureList().find((f) => f.flat_slot === state.selectedFurnSlot) || null;
+      const d = state.transformDraft;
+      const usePlotLocal = state.furnScope === 'outdoor' && $('tfPlotLocal').checked;
+      if (
+        item
+        && state.transformDirty
+        && d
+        && Number.isFinite(d.x)
+        && Number.isFinite(d.y)
+        && Number.isFinite(d.z)
+        && Number.isFinite(d.rotDeg)
+      ) {
+        // Convert existing draft between world and plot-local spaces around this item's baseline.
+        const theta = item.local_rotation - item.rotation;
+        const cos = Math.cos(theta);
+        const sin = Math.sin(theta);
+        if (usePlotLocal) {
+          // Switched world -> plot-local
+          const dwx = d.x - item.pos_x;
+          const dwy = d.y - item.pos_y;
+          const dwz = d.z - item.pos_z;
+          const dwr = (d.rotDeg * Math.PI) / 180 - item.rotation;
+          state.transformDraft = {
+            x: item.local_x + (dwx * cos + dwz * sin),
+            y: item.local_y + dwy,
+            z: item.local_z + (-dwx * sin + dwz * cos),
+            rotDeg: wrapDegrees(((item.local_rotation + dwr) * 180) / Math.PI),
+          };
+          state.transformOriginal = {
+            x: item.local_x,
+            y: item.local_y,
+            z: item.local_z,
+            rotDeg: wrapDegrees((item.local_rotation * 180) / Math.PI),
+          };
+        } else {
+          // Switched plot-local -> world
+          const dlx = d.x - item.local_x;
+          const dly = d.y - item.local_y;
+          const dlz = d.z - item.local_z;
+          const dlr = (d.rotDeg * Math.PI) / 180 - item.local_rotation;
+          state.transformDraft = {
+            x: item.pos_x + (dlx * cos - dlz * sin),
+            y: item.pos_y + dly,
+            z: item.pos_z + (dlx * sin + dlz * cos),
+            rotDeg: wrapDegrees(((item.rotation + dlr) * 180) / Math.PI),
+          };
+          state.transformOriginal = {
+            x: item.pos_x,
+            y: item.pos_y,
+            z: item.pos_z,
+            rotDeg: wrapDegrees((item.rotation * 180) / Math.PI),
+          };
+        }
+      } else {
+        syncSelectedFurnitureIntoDraft({ force: true });
+      }
       renderFurniture();
     });
     ['furnSearchInput', 'furnDyedOnly', 'furnSortSelect'].forEach((id) => {
@@ -1759,18 +2070,21 @@
     $('furnitureTableBody').addEventListener('click', (ev) => {
       const tr = ev.target.closest('[data-furn-slot]');
       if (!tr) return;
+      cancelPendingLiveMove();
       state.selectedFurnSlot = Number(tr.dataset.furnSlot);
-      syncSelectedFurnitureIntoDraft();
+      state.transformDirty = false;
+      syncSelectedFurnitureIntoDraft({ force: true });
       renderFurniture();
     });
 
     const onAxisEdit = (axis, value) => {
-      if (!state.transformDraft || Number.isNaN(value)) return;
+      if (!state.transformDraft || !Number.isFinite(value)) return;
+      state.transformDirty = true;
       if (axis === 'x') state.transformDraft.x = value;
       if (axis === 'y') state.transformDraft.y = value;
       if (axis === 'z') state.transformDraft.z = value;
-      if (axis === 'rot') state.transformDraft.rotDeg = value;
-      if (axis === 'rot') $('tfRotSlider').value = Math.max(-180, Math.min(180, value));
+      if (axis === 'rot') state.transformDraft.rotDeg = wrapDegrees(value);
+      if (axis === 'rot') $('tfRotSlider').value = Math.max(-180, Math.min(180, state.transformDraft.rotDeg));
       scheduleLivePreview();
     };
 
@@ -1780,7 +2094,8 @@
     $('tfRotDeg').addEventListener('input', (e) => onAxisEdit('rot', parseFloat(e.target.value)));
     $('tfRotSlider').addEventListener('input', (e) => {
       if (!state.transformDraft) return;
-      const v = parseFloat(e.target.value);
+      const v = wrapDegrees(parseFloat(e.target.value));
+      state.transformDirty = true;
       state.transformDraft.rotDeg = v;
       $('tfRotDeg').value = v.toFixed(1);
       scheduleLivePreview();
@@ -1791,10 +2106,13 @@
         if (!state.transformDraft) return;
         const axis = btn.dataset.axis;
         const delta = parseFloat(btn.dataset.delta);
+        state.transformDirty = true;
         if (axis === 'x') state.transformDraft.x = Number((state.transformDraft.x + delta).toFixed(4));
         if (axis === 'y') state.transformDraft.y = Number((state.transformDraft.y + delta).toFixed(4));
         if (axis === 'z') state.transformDraft.z = Number((state.transformDraft.z + delta).toFixed(4));
-        if (axis === 'rot') state.transformDraft.rotDeg = Number((state.transformDraft.rotDeg + delta).toFixed(2));
+        if (axis === 'rot') {
+          state.transformDraft.rotDeg = Number(wrapDegrees(state.transformDraft.rotDeg + delta).toFixed(2));
+        }
         renderFurniture();
         scheduleLivePreview();
       });
@@ -1802,12 +2120,17 @@
 
     $('btnTfRevert').addEventListener('click', () => {
       if (!state.transformOriginal) return;
+      cancelPendingLiveMove();
       state.transformDraft = { ...state.transformOriginal };
+      state.transformDirty = false;
       renderFurniture();
       dispatchLiveMove({ commitDb: false }).catch((err) => toast(`되돌리기 오류: ${err.message}`, true));
     });
     $('btnTfCommit').addEventListener('click', () => {
-      dispatchLiveMove({ commitDb: true }).catch((err) => toast(`저장 실패: ${err.message}`, true));
+      cancelPendingLiveMove();
+      runBusy($('btnTfCommit'), () =>
+        dispatchLiveMove({ commitDb: true }).catch((err) => toast(`저장 실패: ${err.message}`, true))
+      );
     });
 
     // Environment & Snapshots
@@ -1815,71 +2138,94 @@
       btn.addEventListener('click', () => {
         document.querySelectorAll('#envLightPills [data-light]').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
+        state.envDirty.light = true;
+      });
+    });
+    $('envSsaoCheck').addEventListener('change', () => { state.envDirty.light = true; });
+    $('envVisitorsCheck').addEventListener('change', () => { state.envDirty.light = true; });
+    $('envStyleSelect').addEventListener('change', () => { state.envDirty.style = true; });
+
+    $('envNameInput').addEventListener('input', (e) => {
+      state.envDirty.meta = true;
+      $('envNameBytes').textContent = utf8ByteLength(e.target.value);
+    });
+    $('envGreetingInput').addEventListener('input', (e) => {
+      state.envDirty.meta = true;
+      $('envGreetingBytes').textContent = utf8ByteLength(e.target.value);
+    });
+    $('envMemoInput').addEventListener('input', () => { state.envDirty.memo = true; });
+
+    $('btnEnvSaveLight').addEventListener('click', () => {
+      if (!state.selectedLandIdent) return;
+      runBusy($('btnEnvSaveLight'), async () => {
+        const activeBtn = document.querySelector('#envLightPills .seg-btn.active');
+        const lightLevel = activeBtn ? Number(activeBtn.dataset.light) : 3;
+        try {
+          await apiJson(`/estates/${state.selectedLandIdent}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              light_level: lightLevel,
+              enable_ssao: $('envSsaoCheck').checked,
+              visitors_allowed: $('envVisitorsCheck').checked,
+              reload_mode: $('envReloadSelect').value,
+              source: 'web_ui',
+            }),
+          });
+          state.envDirty.light = false;
+          toast(`조명 (${lightLevel}) 및 옵션 반영 완료`);
+          await refreshEstateDetail({ silent: true, forceSync: false });
+        } catch (err) {
+          toast(`설정 반영 실패: ${err.message}`, true);
+        }
       });
     });
 
-    $('envNameInput').addEventListener('input', (e) => { $('envNameBytes').textContent = utf8ByteLength(e.target.value); });
-    $('envGreetingInput').addEventListener('input', (e) => { $('envGreetingBytes').textContent = utf8ByteLength(e.target.value); });
-
-    $('btnEnvSaveLight').addEventListener('click', async () => {
+    $('btnEnvApplyStyle').addEventListener('click', () => {
       if (!state.selectedLandIdent) return;
-      const activeBtn = document.querySelector('#envLightPills .seg-btn.active');
-      const lightLevel = activeBtn ? Number(activeBtn.dataset.light) : 3;
-      try {
-        await apiJson(`/estates/${state.selectedLandIdent}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            light_level: lightLevel,
-            enable_ssao: $('envSsaoCheck').checked,
-            visitors_allowed: $('envVisitorsCheck').checked,
-            reload_mode: $('envReloadSelect').value,
-            source: 'web_ui',
-          }),
-        });
-        toast(`조명 (${lightLevel}) 및 옵션 반영 완료`);
-        await refreshEstateDetail({ silent: true });
-      } catch (err) {
-        toast(`설정 반영 실패: ${err.message}`, true);
-      }
+      runBusy($('btnEnvApplyStyle'), async () => {
+        try {
+          await apiJson(`/estates/${state.selectedLandIdent}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              interior_style: $('envStyleSelect').value,
+              reload_mode: 'zone_reload',
+              source: 'web_ui',
+            }),
+          });
+          state.envDirty.style = false;
+          toast('실내 내장재 양식을 적용했습니다.');
+          await refreshAll(state.selectedLandIdent, { forceSync: false });
+        } catch (err) {
+          toast(`양식 적용 실패: ${err.message}`, true);
+        }
+      });
     });
 
-    $('btnEnvApplyStyle').addEventListener('click', async () => {
+    $('btnEnvSaveMeta').addEventListener('click', () => {
       if (!state.selectedLandIdent) return;
-      try {
-        await apiJson(`/estates/${state.selectedLandIdent}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            interior_style: $('envStyleSelect').value,
-            reload_mode: 'zone_reload',
-            source: 'web_ui',
-          }),
-        });
-        toast('실내 내장재 양식을 적용했습니다.');
-        await refreshAll(state.selectedLandIdent);
-      } catch (err) {
-        toast(`양식 적용 실패: ${err.message}`, true);
-      }
-    });
-
-    $('btnEnvSaveMeta').addEventListener('click', async () => {
-      if (!state.selectedLandIdent) return;
-      try {
-        await apiJson(`/estates/${state.selectedLandIdent}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            estate_name: $('envNameInput').value.trim(),
-            greeting: $('envGreetingInput').value.trim(),
-            reload_mode: 'live_packets',
-            source: 'web_ui',
-          }),
-        });
-        state.memos[state.selectedLandIdent] = $('envMemoInput').value.trim();
-        savePrefs();
-        toast('이름 및 인사말 저장 완료');
-        await refreshAll(state.selectedLandIdent);
-      } catch (err) {
-        toast(`저장 실패: ${err.message}`, true);
-      }
+      runBusy($('btnEnvSaveMeta'), async () => {
+        try {
+          await apiJson(`/estates/${state.selectedLandIdent}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              estate_name: $('envNameInput').value.trim(),
+              greeting: $('envGreetingInput').value.trim(),
+              reload_mode: 'live_packets',
+              source: 'web_ui',
+            }),
+          });
+          const memo = $('envMemoInput').value.trim();
+          if (memo) state.memos[state.selectedLandIdent] = memo;
+          else delete state.memos[state.selectedLandIdent];
+          savePrefs();
+          state.envDirty.meta = false;
+          state.envDirty.memo = false;
+          toast('이름 및 인사말 저장 완료');
+          await refreshAll(state.selectedLandIdent, { forceSync: false });
+        } catch (err) {
+          toast(`저장 실패: ${err.message}`, true);
+        }
+      });
     });
 
     $('btnEnvSaveMemo').addEventListener('click', () => {
@@ -1888,49 +2234,70 @@
       if (memo) state.memos[state.selectedLandIdent] = memo;
       else delete state.memos[state.selectedLandIdent];
       savePrefs();
+      state.envDirty.memo = false;
       renderEstates();
       toast('로컬 메모를 저장했습니다.');
     });
 
-    $('btnResetIndoor').addEventListener('click', () => state.selectedLandIdent && resetEstateScope(state.selectedLandIdent, 'interior'));
-    $('btnResetExterior').addEventListener('click', () => state.selectedLandIdent && resetEstateScope(state.selectedLandIdent, 'exterior'));
-    $('btnResetAll').addEventListener('click', () => state.selectedLandIdent && resetEstateScope(state.selectedLandIdent, 'all'));
-    $('btnDeleteEstate').addEventListener('click', () => state.selectedLandIdent && deleteEstate(state.selectedLandIdent));
-    $('btnEnvForceReload').addEventListener('click', () => $('sidebarBtnReload').click());
-
-    $('btnSnapshotCreate').addEventListener('click', async () => {
-      if (!state.selectedLandIdent) return;
-      try {
-        const res = await apiJson(`/estates/${state.selectedLandIdent}/snapshots`, {
-          method: 'POST',
-          body: JSON.stringify({ label: $('snapshotLabelInput').value.trim() || null }),
-        });
-        $('snapshotLabelInput').value = '';
-        toast(`스냅샷 #${res.id} 저장 완료`);
-        await refreshEstateDetail({ silent: true });
-      } catch (err) {
-        toast(`스냅샷 저장 실패: ${err.message}`, true);
+    $('btnResetIndoor').addEventListener('click', () => {
+      if (state.selectedLandIdent) {
+        runBusy($('btnResetIndoor'), () => resetEstateScope(state.selectedLandIdent, 'interior'));
       }
     });
+    $('btnResetExterior').addEventListener('click', () => {
+      if (state.selectedLandIdent) {
+        runBusy($('btnResetExterior'), () => resetEstateScope(state.selectedLandIdent, 'exterior'));
+      }
+    });
+    $('btnResetAll').addEventListener('click', () => {
+      if (state.selectedLandIdent) {
+        runBusy($('btnResetAll'), () => resetEstateScope(state.selectedLandIdent, 'all'));
+      }
+    });
+    $('btnDeleteEstate').addEventListener('click', () => {
+      if (state.selectedLandIdent) {
+        runBusy($('btnDeleteEstate'), () => deleteEstate(state.selectedLandIdent));
+      }
+    });
+    $('btnEnvForceReload').addEventListener('click', () => reloadSelectedEstate($('btnEnvForceReload')));
 
-    $('btnSnapshotUndo').addEventListener('click', () => $('sidebarBtnUndo').click());
+    $('btnSnapshotCreate').addEventListener('click', () => {
+      if (!state.selectedLandIdent) return;
+      runBusy($('btnSnapshotCreate'), async () => {
+        try {
+          const res = await apiJson(`/estates/${state.selectedLandIdent}/snapshots`, {
+            method: 'POST',
+            body: JSON.stringify({ label: $('snapshotLabelInput').value.trim() || null }),
+          });
+          $('snapshotLabelInput').value = '';
+          toast(`스냅샷 #${res.id} 저장 완료`);
+          await refreshEstateDetail({ silent: true, forceSync: false });
+        } catch (err) {
+          toast(`스냅샷 저장 실패: ${err.message}`, true);
+        }
+      });
+    });
 
-    $('snapshotTimeline').addEventListener('click', async (ev) => {
+    $('btnSnapshotUndo').addEventListener('click', () => undoSelectedEstate($('btnSnapshotUndo')));
+
+    $('snapshotTimeline').addEventListener('click', (ev) => {
       const btn = ev.target.closest('[data-restore-snapshot]');
       if (!btn || !state.selectedLandIdent) return;
       const snapId = Number(btn.dataset.restoreSnapshot);
-      const ok = await askConfirm('스냅샷 복원', `스냅샷 #${snapId} 시점으로 가구·외장·내장을 복원할까요?`);
-      if (!ok) return;
-      try {
-        await apiJson(`/estates/${state.selectedLandIdent}/snapshots/${snapId}/restore`, {
-          method: 'POST',
-          body: JSON.stringify({ reload_mode: 'auto', preserve_pos: true, source: 'web_ui' }),
-        });
-        toast(`스냅샷 #${snapId} 상태로 복원했습니다.`);
-        await refreshAll(state.selectedLandIdent);
-      } catch (err) {
-        toast(`복원 실패: ${err.message}`, true);
-      }
+      runBusy(btn, async () => {
+        const ok = await askConfirm('스냅샷 복원', `스냅샷 #${snapId} 시점으로 가구·외장·내장을 복원할까요?`);
+        if (!ok) return;
+        try {
+          await apiJson(`/estates/${state.selectedLandIdent}/snapshots/${snapId}/restore`, {
+            method: 'POST',
+            body: JSON.stringify({ reload_mode: 'auto', preserve_pos: true, source: 'web_ui' }),
+          });
+          toast(`스냅샷 #${snapId} 상태로 복원했습니다.`);
+          await refreshAll(state.selectedLandIdent, { forceSync: true });
+        } catch (err) {
+          toast(`복원 실패: ${err.message}`, true);
+        }
+      });
     });
 
     // Logs
@@ -1962,5 +2329,5 @@
   bindEvents();
   switchTab(state.activeTab);
   connectSse();
-  refreshAll();
+  refreshAll(null, { forceSync: true });
 })();

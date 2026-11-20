@@ -318,6 +318,14 @@ pub enum HousingSimToServer {
         enter_if_elsewhere: bool,
         source: Option<String>,
     },
+    NotifyClientsEstateDeleted {
+        land_ident: i32,
+        territory_type_id: u16,
+        ward_index: u8,
+        division: u8,
+        plot_index: u8,
+        is_apartment: bool,
+    },
     UnlockClientSession {
         content_id: Option<u64>,
     },
@@ -336,6 +344,14 @@ pub enum HousingSimFromServer {
         preserve_player_pos: bool,
         force_enter: bool,
         source: Option<String>,
+    },
+    EstateDeleted {
+        land_ident: i32,
+        territory_type_id: u16,
+        ward_index: u8,
+        division: u8,
+        plot_index: u8,
+        is_apartment: bool,
     },
     ApplyLiveMoves {
         land_ident: i32,
@@ -470,13 +486,49 @@ impl HousingSimHub {
         }
     }
 
+    /// Clears `active_estate` on any online session referencing a deleted `land_ident` and notifies SSE subscribers.
+    pub fn clear_active_estate_for_land_ident(&self, land_ident: i32) {
+        let mut updated_snaps = Vec::new();
+        {
+            let mut guard = self.sessions.write();
+            for snap in guard.values_mut() {
+                if snap
+                    .active_estate
+                    .as_ref()
+                    .is_some_and(|e| e.land_ident == land_ident)
+                {
+                    snap.active_estate = None;
+                    updated_snaps.push(snap.clone());
+                }
+            }
+        }
+        for snap in updated_snaps {
+            let evt = HousingSseEvent::new(
+                "session_state",
+                None,
+                format!("{} @ zone {}", snap.character_name, snap.zone_id),
+            )
+            .with_session(snap);
+            self.emit_event(evt);
+        }
+    }
+
     pub fn remove_session(&self, client_id: ClientId) {
-        if let Some(removed) = self.sessions.write().remove(&client_id) {
-            self.emit_event(HousingSseEvent::new(
+        let removed = {
+            let mut guard = self.sessions.write();
+            guard.remove(&client_id)
+        };
+        if let Some(removed) = removed {
+            let next_primary = self.list_online_sessions().into_iter().next();
+            let mut evt = HousingSseEvent::new(
                 "session_offline",
                 removed.active_estate.as_ref().map(|e| e.land_ident),
                 format!("{} disconnected", removed.character_name),
-            ));
+            );
+            if let Some(next) = next_primary {
+                evt = evt.with_session(next);
+            }
+            self.emit_event(evt);
         }
     }
 
@@ -562,5 +614,94 @@ mod tests {
 
         session.clear_pending_indoor_reentry();
         assert!(session.pending_same_zone_indoor_reentry.is_none());
+    }
+
+    #[test]
+    fn clear_active_estate_and_remove_session_preserve_remaining_primary() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let db = Arc::new(Mutex::new(WorldDatabase::new_in_memory()));
+        let handle = ServerHandle {
+            chan: tx,
+            next_id: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+        };
+        let hub = HousingSimHub::new_for_tests(
+            handle.clone(),
+            db,
+            crate::housing_sim::gamedata_ext::HousingCatalog::default(),
+        );
+        let mut rx = hub.event_tx.subscribe();
+
+        let cid_a = handle.next_id();
+        let cid_b = handle.next_id();
+        let snap_a = OnlineSessionSnapshot {
+            client_id_debug: format!("{cid_a:?}"),
+            client_id: Some(cid_a),
+            content_id: 100,
+            actor_id: 10,
+            character_name: "Alpha".to_string(),
+            zone_id: 342,
+            intended_use: TerritoryIntendedUse::HousingIndoor,
+            position: [0.0; 3],
+            rotation: 0.0,
+            active_estate: Some(ActiveEstateSelection {
+                land_ident: 34000001,
+                house_id: 1,
+                territory_type_id: 340,
+                ward_index: 0,
+                division: 0,
+                plot_index: 0,
+                room_number: 0,
+                is_apartment: false,
+                plot_size: 0,
+                indoors: true,
+            }),
+            display_ward_context: None,
+            authoritative_ward_context: None,
+        };
+        let snap_b = OnlineSessionSnapshot {
+            client_id_debug: format!("{cid_b:?}"),
+            client_id: Some(cid_b),
+            content_id: 200,
+            actor_id: 20,
+            character_name: "Beta".to_string(),
+            zone_id: 340,
+            intended_use: TerritoryIntendedUse::HousingOutdoor,
+            position: [0.0; 3],
+            rotation: 0.0,
+            active_estate: None,
+            display_ward_context: None,
+            authoritative_ward_context: None,
+        };
+        hub.update_session(cid_a, snap_a);
+        hub.update_session(cid_b, snap_b);
+        let _ = rx.try_recv();
+        let _ = rx.try_recv();
+
+        hub.clear_active_estate_for_land_ident(34000001);
+        let cleared_evt = rx.try_recv().unwrap();
+        assert_eq!(cleared_evt.kind, "session_state");
+        assert!(
+            cleared_evt
+                .session
+                .as_ref()
+                .is_some_and(|s| s.active_estate.is_none())
+        );
+        assert!(hub.list_online_sessions()[0].active_estate.is_none());
+
+        hub.remove_session(cid_a);
+        let off_evt_1 = rx.try_recv().unwrap();
+        assert_eq!(off_evt_1.kind, "session_offline");
+        assert_eq!(
+            off_evt_1
+                .session
+                .as_ref()
+                .map(|s| s.character_name.as_str()),
+            Some("Beta")
+        );
+
+        hub.remove_session(cid_b);
+        let off_evt_2 = rx.try_recv().unwrap();
+        assert_eq!(off_evt_2.kind, "session_offline");
+        assert!(off_evt_2.session.is_none());
     }
 }

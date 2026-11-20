@@ -2,7 +2,8 @@ use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, FromRequest, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -11,6 +12,7 @@ use axum::{Json, Router};
 use futures_util::stream::{self, Stream};
 use kawari::common::{HousingFlag, Position};
 use kawari::ipc::zone::PlotSize;
+use serde::de::{self, Deserializer, Visitor};
 use serde_derive::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
@@ -59,6 +61,147 @@ type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ApiErrorBody>)>;
 
 fn api_err(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiErrorBody>) {
     (status, Json(ApiErrorBody { error: msg.into() }))
+}
+
+/// JSON extractor that treats empty/whitespace bodies as `None` even when `Content-Type: application/json` is present.
+struct OptionalJson<T>(Option<T>);
+
+impl<S, T> FromRequest<S> for OptionalJson<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = (StatusCode, Json<ApiErrorBody>);
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = Bytes::from_request(req, state)
+            .await
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
+        if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+            return Ok(Self(None));
+        }
+        let parsed = serde_json::from_slice::<T>(&bytes)
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, format!("Invalid JSON body: {e}")))?;
+        Ok(Self(Some(parsed)))
+    }
+}
+
+struct NullableU64Visitor;
+
+impl<'de> Visitor<'de> for NullableU64Visitor {
+    type Value = Option<u64>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an unsigned integer or null")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(Some(v))
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+        u64::try_from(v).map(Some).map_err(de::Error::custom)
+    }
+}
+
+fn de_opt_u64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    deserializer.deserialize_any(NullableU64Visitor)
+}
+
+fn de_null_u8<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    match de_opt_u64(deserializer)? {
+        Some(v) => u8::try_from(v).map_err(de::Error::custom),
+        None => Ok(0),
+    }
+}
+
+fn de_null_u16<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
+    match de_opt_u64(deserializer)? {
+        Some(v) => u16::try_from(v).map_err(de::Error::custom),
+        None => Ok(0),
+    }
+}
+
+fn de_null_territory_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
+    match de_opt_u64(deserializer)? {
+        Some(v) => u16::try_from(v).map_err(de::Error::custom),
+        None => Ok(340),
+    }
+}
+
+fn de_null_world_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
+    match de_opt_u64(deserializer)? {
+        Some(v) => u16::try_from(v).map_err(de::Error::custom),
+        None => Ok(kawari::config::get_config().world.world_id),
+    }
+}
+
+fn de_null_owner_content_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    Ok(de_opt_u64(deserializer)?.unwrap_or(1))
+}
+
+struct NullableBoolVisitor;
+
+impl<'de> Visitor<'de> for NullableBoolVisitor {
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a boolean or null")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(false)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(false)
+    }
+
+    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(v)
+    }
+}
+
+fn de_null_bool<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    deserializer.deserialize_any(NullableBoolVisitor)
+}
+
+struct NullableOwnerNameVisitor;
+
+impl<'de> Visitor<'de> for NullableOwnerNameVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a string or null")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok("Simulator".to_string())
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok("Simulator".to_string())
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(v.to_string())
+    }
+
+    fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+        Ok(v)
+    }
+}
+
+fn de_null_owner_name<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    deserializer.deserialize_any(NullableOwnerNameVisitor)
 }
 
 /// Builds the complete `/api/v1/housing` Axum router.
@@ -210,16 +353,25 @@ async fn list_estates_handler(
 #[serde(default)]
 pub struct EnsureEstateRequest {
     pub district: Option<String>,
+    #[serde(deserialize_with = "de_null_territory_id")]
     pub territory_type_id: u16,
+    #[serde(deserialize_with = "de_null_world_id")]
     pub world_id: u16,
+    #[serde(deserialize_with = "de_null_u8")]
     pub ward_index: u8,
+    #[serde(deserialize_with = "de_null_u8")]
     pub division: u8,
     pub plot_index: Option<u8>,
+    #[serde(deserialize_with = "de_null_u16")]
     pub room_number: u16,
+    #[serde(deserialize_with = "de_null_bool")]
     pub is_apartment: bool,
     pub plot_size: Option<u8>,
+    #[serde(deserialize_with = "de_null_bool")]
     pub is_fc: bool,
+    #[serde(deserialize_with = "de_null_owner_content_id")]
     pub owner_content_id: u64,
+    #[serde(deserialize_with = "de_null_owner_name")]
     pub owner_name: String,
     pub estate_name: Option<String>,
 }
@@ -484,12 +636,12 @@ pub struct UnlockAllSessionResponse {
 
 async fn unlock_all_session_handler(
     State(hub): State<Arc<HousingSimHub>>,
-    body: Option<Json<UnlockAllSessionRequest>>,
+    OptionalJson(req): OptionalJson<UnlockAllSessionRequest>,
 ) -> ApiResult<UnlockAllSessionResponse> {
-    let req = body.map(|b| b.0).unwrap_or_default();
+    let req = req.unwrap_or_default();
     let names = {
-        let gd_guard = hub.game_data.as_ref().map(|gd| gd.lock());
         let mut db = hub.database.lock();
+        let gd_guard = hub.game_data.as_ref().map(|gd| gd.lock());
         unlock_characters_in_database(&mut db, gd_guard.as_deref(), req.content_id)
             .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
@@ -752,21 +904,39 @@ async fn delete_estate_handler(
     State(hub): State<Arc<HousingSimHub>>,
     Path(land_ident): Path<i32>,
 ) -> ApiResult<serde_json::Value> {
-    let deleted = {
+    let estate = {
         let mut db = hub.database.lock();
-        delete_estate_and_furniture(db.connection_mut(), land_ident)
+        let conn = db.connection_mut();
+        let Some(estate) = estate_by_land_ident(conn, land_ident)
             .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        else {
+            return Err(api_err(StatusCode::NOT_FOUND, "Estate not found"));
+        };
+        let deleted = delete_estate_and_furniture(conn, land_ident)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if deleted == 0 {
+            return Err(api_err(StatusCode::NOT_FOUND, "Estate not found"));
+        }
+        estate
     };
 
-    if deleted == 0 {
-        return Err(api_err(StatusCode::NOT_FOUND, "Estate not found"));
-    }
-
+    hub.clear_active_estate_for_land_ident(land_ident);
     hub.emit_event(HousingSseEvent::new(
         "estate_deleted",
         Some(land_ident),
         format!("하우스 #{land_ident} 삭제 완료"),
     ));
+    hub.send_to_server(ToServer::HousingSim(
+        HousingSimToServer::NotifyClientsEstateDeleted {
+            land_ident,
+            territory_type_id: estate.territory_type_id as u16,
+            ward_index: estate.ward_index as u8,
+            division: estate.division.clamp(0, 1) as u8,
+            plot_index: estate.plot_index as u8,
+            is_apartment: estate.is_apartment,
+        },
+    ))
+    .await;
 
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -1101,10 +1271,10 @@ pub struct CreateSnapshotRequest {
 async fn create_snapshot_handler(
     State(hub): State<Arc<HousingSimHub>>,
     Path(land_ident): Path<i32>,
-    body: Option<Json<CreateSnapshotRequest>>,
+    OptionalJson(body): OptionalJson<CreateSnapshotRequest>,
 ) -> ApiResult<SnapshotSummary> {
     let raw_label = body
-        .and_then(|b| b.0.label)
+        .and_then(|b| b.label)
         .unwrap_or_default()
         .trim()
         .to_string();
@@ -1158,9 +1328,9 @@ pub struct RestoreSnapshotRequest {
 async fn restore_snapshot_handler(
     State(hub): State<Arc<HousingSimHub>>,
     Path((land_ident, snapshot_id)): Path<(i32, i32)>,
-    body: Option<Json<RestoreSnapshotRequest>>,
+    OptionalJson(req): OptionalJson<RestoreSnapshotRequest>,
 ) -> ApiResult<SnapshotSummary> {
-    let req = body.map(|b| b.0).unwrap_or_default();
+    let req = req.unwrap_or_default();
     let restored = {
         let mut db = hub.database.lock();
         match restore_snapshot(db.connection_mut(), land_ident, snapshot_id) {
@@ -1206,9 +1376,9 @@ async fn restore_snapshot_handler(
 async fn undo_estate_handler(
     State(hub): State<Arc<HousingSimHub>>,
     Path(land_ident): Path<i32>,
-    body: Option<Json<RestoreSnapshotRequest>>,
+    OptionalJson(req): OptionalJson<RestoreSnapshotRequest>,
 ) -> ApiResult<SnapshotSummary> {
-    let req = body.map(|b| b.0).unwrap_or_default();
+    let req = req.unwrap_or_default();
     let (snap_id, restored) = {
         let mut db = hub.database.lock();
         match restore_latest_snapshot(db.connection_mut(), land_ident) {
@@ -1834,7 +2004,7 @@ mod tests {
         let undone = undo_estate_handler(
             State(hub.clone()),
             Path(ensured.land_ident),
-            Some(Json(RestoreSnapshotRequest {
+            OptionalJson(Some(RestoreSnapshotRequest {
                 reload_mode: ReloadMode::None,
                 ..Default::default()
             })),
@@ -1962,7 +2132,7 @@ mod tests {
             );
         }
 
-        let res = unlock_all_session_handler(State(hub.clone()), None)
+        let res = unlock_all_session_handler(State(hub.clone()), OptionalJson(None))
             .await
             .unwrap()
             .0;
@@ -2223,7 +2393,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_manual_snapshot_and_delete_estate_lifecycle() {
-        let (hub, _rx) = test_hub();
+        let (hub, mut rx) = test_hub();
 
         let ensured = ensure_estate_handler(
             State(hub.clone()),
@@ -2243,10 +2413,40 @@ mod tests {
         .unwrap()
         .0;
 
+        let cid = hub.server_handle.next_id();
+        hub.update_session(
+            cid,
+            OnlineSessionSnapshot {
+                client_id_debug: format!("{cid:?}"),
+                client_id: Some(cid),
+                content_id: 77,
+                actor_id: 1001,
+                character_name: "SnapshotTester".to_string(),
+                zone_id: 342,
+                intended_use: kawari::common::TerritoryIntendedUse::HousingIndoor,
+                position: [0.0; 3],
+                rotation: 0.0,
+                active_estate: Some(crate::housing_sim::session::ActiveEstateSelection {
+                    land_ident: ensured.land_ident,
+                    house_id: ensured.house_id as u64,
+                    territory_type_id: 340,
+                    ward_index: 2,
+                    division: 0,
+                    plot_index: 0,
+                    room_number: 0,
+                    is_apartment: false,
+                    plot_size: 0,
+                    indoors: true,
+                }),
+                display_ward_context: None,
+                authoritative_ward_context: None,
+            },
+        );
+
         let created = create_snapshot_handler(
             State(hub.clone()),
             Path(ensured.land_ident),
-            Some(Json(CreateSnapshotRequest {
+            OptionalJson(Some(CreateSnapshotRequest {
                 label: Some("  before remodel  ".to_string()),
             })),
         )
@@ -2269,6 +2469,12 @@ mod tests {
             .0;
         assert_eq!(deleted["ok"], true);
         assert_eq!(deleted["land_ident"], ensured.land_ident);
+        assert!(hub.list_online_sessions()[0].active_estate.is_none());
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ToServer::HousingSim(HousingSimToServer::NotifyClientsEstateDeleted { land_ident, .. })
+                if land_ident == ensured.land_ident
+        ));
 
         let second_delete =
             delete_estate_handler(State(hub.clone()), Path(ensured.land_ident)).await;
@@ -2276,5 +2482,41 @@ mod tests {
 
         let get_after_delete = get_estate_handler(State(hub), Path(ensured.land_ident)).await;
         assert!(matches!(get_after_delete, Err((StatusCode::NOT_FOUND, _))));
+    }
+
+    #[tokio::test]
+    async fn optional_json_and_ensure_request_handle_empty_and_null_inputs() {
+        let req_empty = Request::builder()
+            .method("POST")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let OptionalJson(parsed_empty) =
+            OptionalJson::<CreateSnapshotRequest>::from_request(req_empty, &())
+                .await
+                .expect("empty JSON body should yield None");
+        assert!(parsed_empty.is_none());
+
+        let ensure_req: EnsureEstateRequest = serde_json::from_str(
+            r#"{
+                "district": "mist",
+                "territory_type_id": null,
+                "ward_index": null,
+                "division": null,
+                "plot_index": null,
+                "room_number": null,
+                "is_apartment": null,
+                "plot_size": null,
+                "is_fc": null,
+                "owner_content_id": null,
+                "owner_name": null,
+                "estate_name": null
+            }"#,
+        )
+        .expect("explicit null fields should fall back to defaults");
+        assert_eq!(ensure_req.territory_type_id, 340);
+        assert_eq!(ensure_req.owner_content_id, 1);
+        assert_eq!(ensure_req.owner_name, "Simulator");
+        assert!(!ensure_req.is_apartment);
     }
 }
