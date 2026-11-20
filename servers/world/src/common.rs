@@ -601,28 +601,3 @@ pub fn roll_die(num_sides: u16) -> (u16, u16) {
 
     (sides_result, roll_result)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::sync::mpsc::channel;
-
-    #[test]
-    fn client_handle_send_drops_on_full_without_disconnecting_and_errors_on_closed() {
-        let (tx, rx) = channel(1);
-        let mut handle = ClientHandle {
-            id: ClientId(7),
-            channel: tx,
-            actor_id: ObjectId(100),
-            content_id: 42,
-            account_id: 1,
-        };
-
-        assert!(handle.send(FromServer::ChatDisconnected).is_ok());
-        assert!(handle.send(FromServer::ChatDisconnected).is_ok());
-
-        drop(rx);
-        let err = handle.send(FromServer::ChatDisconnected).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
-    }
-}

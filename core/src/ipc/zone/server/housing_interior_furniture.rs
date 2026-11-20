@@ -108,25 +108,7 @@ pub struct FurnitureTranslatedForObserver {
     pub unk2: [u8; 4], // Likely just padding, observed as zeroes
 }
 
-impl HousingInteriorDetails {
-    pub const fn window_stain(&self) -> u8 {
-        (self.exterior_window_dye & 0xFF) as u8
-    }
-
-    pub fn set_window_stain(&mut self, stain: u8) {
-        self.exterior_window_dye = stain as u16;
-    }
-}
-
 impl Furniture {
     pub const SIZE: usize = 24;
     pub const COUNT: usize = 100;
-
-    pub const fn material_item_key(&self) -> u16 {
-        self.id2 as u16
-    }
-
-    pub fn set_material_item_key(&mut self, key: u16) {
-        self.id2 = key as i16;
-    }
 }

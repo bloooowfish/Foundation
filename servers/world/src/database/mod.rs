@@ -4,14 +4,14 @@ mod linkshell;
 mod mail;
 
 mod housing;
-mod models;
+pub(crate) mod models;
 
 pub use models::{
     AetherCurrent, Aetheryte, Buddy, Character, ClassJob, Companion, Content, Customize, Friends,
     GrandCompany, House, Mentor, Quest, SearchInfo, Unlock, Volatile,
 };
 
-mod schema;
+pub(crate) mod schema;
 mod social;
 
 use diesel::{Connection, QueryDsl, RunQueryDsl, SqliteConnection, prelude::*};
@@ -21,7 +21,7 @@ use kawari::common::ObjectId;
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 pub struct WorldDatabase {
-    connection: SqliteConnection,
+    pub(crate) connection: SqliteConnection,
 }
 
 impl Default for WorldDatabase {
@@ -39,21 +39,6 @@ impl WorldDatabase {
         crate::housing_sim::db::ensure_schema(&mut connection);
 
         Self { connection }
-    }
-
-    /// Opens an in-memory SQLite database with all embedded migrations applied for unit tests.
-    #[cfg(test)]
-    pub fn new_in_memory() -> Self {
-        let mut connection =
-            SqliteConnection::establish(":memory:").expect("Failed to open in-memory database!");
-        connection.run_pending_migrations(MIGRATIONS).unwrap();
-        crate::housing_sim::db::ensure_schema(&mut connection);
-        Self { connection }
-    }
-
-    /// Returns a mutable handle to the underlying SQLite connection for isolated domain modules.
-    pub fn connection_mut(&mut self) -> &mut SqliteConnection {
-        &mut self.connection
     }
 
     fn generate_content_id() -> u32 {

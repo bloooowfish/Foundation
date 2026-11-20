@@ -245,56 +245,6 @@ impl ZoneConnection {
         .await;
     }
 
-    /// Sends multiple `ServerZoneIpcSegment` items addressed to self in bounded multi-segment packets.
-    pub async fn send_ipcs_self(&mut self, ipcs: &[ServerZoneIpcSegment]) {
-        const MAX_SEGMENTS_PER_PACKET: usize = 16;
-        const MAX_BATCH_BYTES: usize = 8_192;
-
-        let actor_id = self.player_data.character.actor_id;
-        let mut batch = Vec::with_capacity(MAX_SEGMENTS_PER_PACKET);
-        let mut batch_bytes = 0usize;
-
-        for ipc in ipcs {
-            let segment = PacketSegment {
-                source_actor: actor_id,
-                target_actor: actor_id,
-                segment_type: SegmentType::Ipc,
-                data: SegmentData::Ipc(ipc.clone()),
-            };
-            let seg_size = segment.calc_size() as usize;
-
-            if !batch.is_empty()
-                && (batch.len() >= MAX_SEGMENTS_PER_PACKET
-                    || batch_bytes + seg_size > MAX_BATCH_BYTES)
-            {
-                Box::pin(send_packet(
-                    &mut self.socket,
-                    &mut self.state,
-                    ConnectionType::Zone,
-                    self.config.compression(),
-                    &batch,
-                ))
-                .await;
-                batch.clear();
-                batch_bytes = 0;
-            }
-
-            batch_bytes += seg_size;
-            batch.push(segment);
-        }
-
-        if !batch.is_empty() {
-            Box::pin(send_packet(
-                &mut self.socket,
-                &mut self.state,
-                ConnectionType::Zone,
-                self.config.compression(),
-                &batch,
-            ))
-            .await;
-        }
-    }
-
     pub async fn initialize(&mut self) {
         crate::housing_sim::flows::normalize_indoor_login_location(self);
         self.player_data.item_sequence = 0;

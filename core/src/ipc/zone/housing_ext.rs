@@ -255,3 +255,78 @@ pub struct UpdateAquarium {
 pub struct UpdateOrchestrionPlaylist {
     pub raw: [u8; 16],
 }
+
+impl super::DyeInformation {
+    /// Returns the primary stain ID for housing dye operations.
+    pub fn housing_stain(&self) -> u8 {
+        self.dye1
+    }
+
+    /// Returns true when the packet originates from housing dye mode (`9999` or negative secondary slot).
+    pub fn is_housing_dye_mode(&self) -> bool {
+        self.dye2_container_or_slot_raw == 9999 || self.dye2_slot < 0
+    }
+}
+
+impl super::HousingInteriorDetails {
+    pub const fn window_stain(&self) -> u8 {
+        (self.exterior_window_dye & 0xFF) as u8
+    }
+
+    pub fn set_window_stain(&mut self, stain: u8) {
+        self.exterior_window_dye = stain as u16;
+    }
+}
+
+impl super::Furniture {
+    pub const fn material_item_key(&self) -> u16 {
+        self.id2 as u16
+    }
+
+    pub fn set_material_item_key(&mut self, key: u16) {
+        self.id2 = key as i16;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use binrw::{BinRead, BinWrite};
+
+    use super::*;
+    use crate::ipc::zone::DyeInformation;
+
+    #[test]
+    fn dye_information_758_layout_roundtrips_24_bytes() {
+        let info = DyeInformation {
+            target_container: ContainerType::HousingInteriorPlacedItems1,
+            target_slot: 12,
+            target_slot_pad: 0,
+            dye1_container_raw: 0,
+            dye2_container_or_slot_raw: 9999,
+            dye1_slot: 5,
+            dye2_slot: -1,
+            dye1: 42,
+            dye2: 0,
+            unk2: 0,
+        };
+        let mut buf = Cursor::new(Vec::new());
+        info.write_le(&mut buf)
+            .expect("DyeInformation should serialize");
+        let bytes = buf.into_inner();
+        assert_eq!(bytes.len(), 24);
+
+        let decoded =
+            DyeInformation::read_le(&mut Cursor::new(&bytes)).expect("DyeInformation should parse");
+        assert_eq!(
+            decoded.target_container,
+            ContainerType::HousingInteriorPlacedItems1
+        );
+        assert_eq!(decoded.target_slot, 12);
+        assert_eq!(decoded.dye1_slot, 5);
+        assert_eq!(decoded.dye2_slot, -1);
+        assert_eq!(decoded.housing_stain(), 42);
+        assert!(decoded.is_housing_dye_mode());
+    }
+}

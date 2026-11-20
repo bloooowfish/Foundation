@@ -482,16 +482,6 @@ impl Zone {
         None
     }
 
-    /// Returns the front-gate street exit `(position, rotation)` nudged 8 yalms forward from the plot's `MapRange`.
-    pub fn housing_plot_exit_transform(&self, raw_plot_index: usize) -> Option<(Position, f32)> {
-        let plot = self.cached_housing_plots.get(raw_plot_index)?;
-        Some(crate::housing_sim::plots::nudge_plot_entrance_exit(
-            Position(plot.entrance_position),
-            plot.entrance_rotation,
-            8.0,
-        ))
-    }
-
     pub fn to_lua_zone(&self, weather_id: u8, query: InstanceQuery) -> LuaZone {
         LuaZone {
             zone_id: self.id,
@@ -1663,63 +1653,5 @@ pub fn handle_zone_messages(
             true
         }
         _ => false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn housing_plot_exit_transform_nudges_eight_yalms_with_radian_rotation() {
-        let mut zone = Zone::default();
-        zone.cached_housing_plots.push(HousingPlot {
-            entrance_position: Vec3A::new(1.0, 2.0, 3.0),
-            entrance_rotation: std::f32::consts::FRAC_PI_2,
-        });
-
-        let (pos, rot) = zone
-            .housing_plot_exit_transform(0)
-            .expect("cached plot must resolve exit transform");
-        assert!((pos.0.x - 9.0).abs() < 1e-4);
-        assert!((pos.0.y - 2.0).abs() < 1e-4);
-        assert!((pos.0.z - 3.0).abs() < 1e-4);
-        assert!((rot - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
-    }
-
-    #[test]
-    fn real_758_housing_ward_loads_sixty_plot_gates_with_valid_radian_rotations() {
-        let Some(game_data) = crate::test_game_data() else {
-            return;
-        };
-        let zone = Zone::load(game_data, 339);
-        assert_eq!(zone.cached_housing_plots.len(), 60);
-        for raw_idx in 0..60usize {
-            let (pos, rot) = zone
-                .housing_plot_exit_transform(raw_idx)
-                .expect("plot exit transform must exist");
-            assert!(
-                (-std::f32::consts::PI..=std::f32::consts::PI).contains(&rot),
-                "rotation {rot} out of radian quantization bounds"
-            );
-            assert!(pos.0.length() > 0.0);
-        }
-    }
-
-    #[test]
-    fn do_change_zone_skips_missing_client_without_panicking() {
-        let mut network = NetworkState::default();
-        let mut target_instance = Instance::default();
-        do_change_zone(
-            &mut network,
-            &mut target_instance,
-            true,
-            None,
-            None,
-            ClientId::default(),
-            WarpType::Normal,
-        );
-        assert!(target_instance.queued_tasks.is_empty());
-        assert!(network.to_remove.is_empty());
     }
 }

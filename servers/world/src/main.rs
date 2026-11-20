@@ -13,12 +13,8 @@ use kawari::common::{
 };
 
 use kawari::config::get_config;
-use kawari_world::inventory::{
-    Item, MAX_EXTERIOR_STORAGE, MAX_LARGE_STORAGE, Storage, get_next_free_slot,
-};
+use kawari_world::inventory::{Item, MAX_LARGE_STORAGE, Storage, get_next_free_slot};
 use physis::equipment::EquipSlot;
-
-use kawari::ipc::chat::ClientChatIpcData;
 
 use kawari::ipc::zone::{
     ActorControlCategory, CWLSLeaveReason, ClientTriggerTarget, Conditions,
@@ -39,10 +35,11 @@ use kawari::ipc::zone::{
 use kawari::common::{CharacterMode, HouseId, HouseUnit, NETWORK_TIMEOUT, RECEIVE_BUFFER_SIZE};
 use kawari::constants::{AETHER_CURRENT_COMP_FLG_SET_BITMASK_SIZE, CLASSJOB_ARRAY_SIZE};
 use kawari::packet::oodle::OodleNetwork;
-use kawari::packet::{
-    ConnectionState, ConnectionType, PacketHeader, SegmentData, parse_packet_header,
+use kawari::packet::{ConnectionState, ConnectionType, SegmentData, parse_packet_header};
+use kawari_world::housing_sim::{
+    self,
+    hooks::{drain_complete_client_packets, handle_chat_packet, read_first_client_packet},
 };
-use kawari_world::housing_sim;
 use kawari_world::lua::{KawariLua, KawariLuaState, LuaPlayer};
 use kawari_world::{
     ChatConnection, CustomIpcConnection, Event, EventHandler, GameData, ObsfucationData, Roulette,
@@ -64,108 +61,6 @@ use tokio::task::JoinHandle;
 
 use kawari::common::INVENTORY_ACTION_ACK_GENERAL;
 use kawari::packet::PredefinedOpcode;
-
-fn drain_complete_client_packets(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
-    let header_size = std::mem::size_of::<PacketHeader>();
-    let mut packets = Vec::new();
-
-    while pending.len() >= header_size {
-        let header = parse_packet_header(&pending[..header_size]);
-        let packet_size = header.size as usize;
-
-        if !(header_size..=RECEIVE_BUFFER_SIZE).contains(&packet_size) {
-            tracing::warn!(
-                pending_bytes = pending.len(),
-                packet_size,
-                "Discarding buffered client bytes with invalid packet size"
-            );
-            pending.clear();
-            break;
-        }
-
-        if pending.len() < packet_size {
-            break;
-        }
-
-        packets.push(pending[..packet_size].to_vec());
-        pending.drain(..packet_size);
-    }
-
-    packets
-}
-
-async fn read_first_client_packet(
-    socket: &mut TcpStream,
-    pending: &mut Vec<u8>,
-) -> std::io::Result<Option<Vec<u8>>> {
-    let header_size = std::mem::size_of::<PacketHeader>();
-    let mut chunk = vec![0; RECEIVE_BUFFER_SIZE];
-
-    loop {
-        if pending.len() >= header_size {
-            let header = parse_packet_header(&pending[..header_size]);
-            let packet_size = header.size as usize;
-            if !(header_size..=RECEIVE_BUFFER_SIZE).contains(&packet_size) {
-                tracing::warn!(
-                    pending_bytes = pending.len(),
-                    packet_size,
-                    "Closing initial connection with invalid packet size"
-                );
-                pending.clear();
-                return Ok(None);
-            }
-            if pending.len() >= packet_size {
-                let first_packet = pending.drain(..packet_size).collect();
-                return Ok(Some(first_packet));
-            }
-        }
-
-        let n = socket.read(&mut chunk).await?;
-        if n == 0 {
-            return Ok(None);
-        }
-        pending.extend_from_slice(&chunk[..n]);
-    }
-}
-
-#[cfg(test)]
-mod packet_stream_tests {
-    use super::*;
-
-    fn packet_bytes(payload_len: usize, fill: u8) -> Vec<u8> {
-        let header_size = std::mem::size_of::<PacketHeader>();
-        let packet_size = header_size + payload_len;
-        let mut bytes = vec![fill; packet_size];
-        bytes[..header_size].fill(0);
-        bytes[24..28].copy_from_slice(&(packet_size as u32).to_le_bytes());
-        bytes
-    }
-
-    #[test]
-    fn drains_multiple_complete_packets_from_one_read_buffer() {
-        let first = packet_bytes(2, 0x11);
-        let second = packet_bytes(3, 0x22);
-        let mut pending = [first.clone(), second.clone()].concat();
-
-        let packets = drain_complete_client_packets(&mut pending);
-
-        assert_eq!(packets, vec![first, second]);
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn leaves_partial_packet_buffered_until_more_bytes_arrive() {
-        let complete = packet_bytes(2, 0x11);
-        let partial = packet_bytes(4, 0x22);
-        let partial_prefix = partial[..partial.len() - 1].to_vec();
-        let mut pending = [complete.clone(), partial_prefix.clone()].concat();
-
-        let packets = drain_complete_client_packets(&mut pending);
-
-        assert_eq!(packets, vec![complete]);
-        assert_eq!(pending, partial_prefix);
-    }
-}
 
 fn spawn_main_loop(
     game_data: Arc<Mutex<GameData>>,
@@ -506,58 +401,6 @@ async fn start_chat_connection(my_handle: oneshot::Receiver<ClientHandle>, data:
         // TODO: It should be okay to reuse the zone connection's client_server_loop for ToServer & FromServer stuff since it gives us our own comms channel, right?
         tokio::spawn(client_server_loop(recv, internal_send))
     );
-}
-
-async fn handle_chat_packet(connection: &mut ChatConnection, packet: &[u8]) {
-    let segments = connection.parse_packet(packet);
-    for segment in segments {
-        match &segment.data {
-            SegmentData::None() => {}
-            SegmentData::Setup { .. } => {
-                // Handled before our connection was spawned!
-            }
-            SegmentData::Ipc(data) => match &data.data {
-                ClientChatIpcData::SendTellMessage(tell_data) => {
-                    connection.send_tell_message(tell_data).await;
-                }
-                ClientChatIpcData::SendPartyMessage(data) => {
-                    connection.send_party_message(data).await;
-                }
-                ClientChatIpcData::GetChannelList { unk } => {
-                    tracing::info!(
-                        "GetChannelList: {:#?} from {}",
-                        unk,
-                        connection.player_data.actor_id
-                    );
-                }
-                ClientChatIpcData::SendCWLinkshellMessage(data) => {
-                    connection.send_linkshell_message(data).await;
-                }
-                ClientChatIpcData::SendAllianceMessage(_data) => {
-                    tracing::info!("Chatting in alliances is unimplemented");
-                }
-                ClientChatIpcData::DiceRollCWLS(data) | ClientChatIpcData::DiceRollParty(data) => {
-                    connection.send_dice_roll(*data).await;
-                }
-                ClientChatIpcData::Unknown { unk } => {
-                    tracing::warn!(
-                        "Unknown chat packet {:?} recieved ({} bytes)",
-                        data.header.op_code,
-                        unk.len()
-                    );
-                }
-            },
-            SegmentData::KeepAliveRequest { id, timestamp } => {
-                connection.send_keep_alive(*id, *timestamp).await
-            }
-            SegmentData::KeepAliveResponse { .. } => {
-                // these should be safe to ignore
-            }
-            _ => panic!(
-                "ChatConnection: The server is receiving a response or an unknown packet: {segment:#?}"
-            ),
-        }
-    }
 }
 
 /// The client's chat connection loop, which allows them to communicate with other players in channels that span across the entire world.
@@ -1116,28 +959,7 @@ async fn process_packet(
                                 .actor_control_self(ActorControlCategory::SetItemLevel { level })
                                 .await;
 
-                            if connection.player_data.unlock.cutscene_seen.contains(2)
-                                && let Some(login_ward) =
-                                    connection.housing_sim.login_ward_spawn.take()
-                            {
-                                connection
-                                    .handle
-                                    .send(ToServer::HousingSim(
-                                        housing_sim::session::HousingSimToServer::SpawnLoginInWard {
-                                            client_id: connection.id,
-                                            actor_id: connection.player_data.character.actor_id,
-                                            territory_type_id: login_ward.territory_type_id,
-                                            ward_index: login_ward.ward_index,
-                                            division: login_ward.division,
-                                            plot_index: login_ward.plot_index,
-                                            is_apartment_exit: login_ward.is_apartment_exit,
-                                            fallback_pos: connection.player_data.volatile.position,
-                                            fallback_rot: connection.player_data.volatile.rotation
-                                                as f32,
-                                        },
-                                    ))
-                                    .await;
-                            } else {
+                            if !housing_sim::hooks::try_send_login_ward_spawn(connection).await {
                                 connection
                                     .handle
                                     .send(ToServer::ReadySpawnPlayer(
@@ -3796,13 +3618,11 @@ async fn process_packet(
                             slot,
                             position,
                             rotation,
-                            spawn_furniture: _,
-                            to_storeroom,
+                            spawn_furniture,
                             plot_index,
                             ..
                         } => {
                             let intended_use = lua_player.zone_data.intended_use;
-                            let move_to_storeroom = *to_storeroom != 0;
 
                             // TODO: Also reject if they're not the owner/shared tenant
                             if !in_housing_area(intended_use) {
@@ -3818,7 +3638,7 @@ async fn process_packet(
                                 slot,
                                 position,
                                 rotation,
-                                move_to_storeroom,
+                                spawn_furniture,
                             );
 
                             let transfer_item = if let Some(the_item) =
@@ -3848,10 +3668,7 @@ async fn process_packet(
                             let desired_pages = connection
                                 .player_data
                                 .house_inventory
-                                .get_desired_pages_from_intendeduse(
-                                    intended_use,
-                                    move_to_storeroom,
-                                );
+                                .get_desired_pages_from_intendeduse(intended_use, !spawn_furniture);
 
                             let Some(result) = connection
                                 .player_data
@@ -3903,7 +3720,7 @@ async fn process_packet(
                                 .await;
 
                             // If the client opted to move furniture to the storeroom, there's nothing further to do here.
-                            if move_to_storeroom {
+                            if !spawn_furniture {
                                 continue;
                             }
 
@@ -3996,10 +3813,8 @@ async fn process_packet(
                                     continue;
                                 }
                             } else {
-                                if *slot < 40 {
+                                if *slot < 50 {
                                     storage_id = ContainerType::HousingExteriorPlacedItems;
-                                } else if *slot < 80 {
-                                    storage_id = ContainerType::HousingExteriorPlacedItems2;
                                 } else {
                                     tracing::warn!(
                                         "Client tried to move furniture beyond the bounds of current housing limits! Rejecting request!"
@@ -4025,15 +3840,10 @@ async fn process_packet(
                                 .await;
 
                             // This ack doesn't need to be networked
-                            let page_size = if indoors {
-                                MAX_LARGE_STORAGE
-                            } else {
-                                MAX_EXTERIOR_STORAGE
-                            } as u16;
                             connection
                                 .actor_control_self(ActorControlCategory::FurnitureTranslatedAck {
                                     storage_id,
-                                    slot: (*slot % page_size) as u32,
+                                    slot: (*slot % MAX_LARGE_STORAGE as u16) as u32,
                                     plot_number: if !house_id.unit.apartment_flag {
                                         house_id.unit.apartment_division_plot_index as u16
                                     } else {
@@ -4820,15 +4630,7 @@ async fn client_loop(
     }
 
     while !disconnect {
-        let deferred_deadline = connection
-            .housing_sim
-            .pending_indoor_finish_loading_since
-            .map(|since| since + std::time::Duration::from_millis(1500));
-        let reentry_deadline = connection
-            .housing_sim
-            .pending_same_zone_indoor_reentry
-            .as_ref()
-            .and_then(|r| r.ready_at);
+        let housing_deadline = housing_sim::hooks::next_housing_deadline(&connection);
 
         tokio::select! {
             biased; // client data should always be prioritized
@@ -4854,27 +4656,13 @@ async fn client_loop(
                 }
             }
             msg = internal_recv.recv() => process_server_msg(&mut connection, &mut lua_player, &mut events, client_handle.clone(), msg).await,
-            _ = async {
-                if let Some(deadline) = deferred_deadline {
-                    tokio::time::sleep_until(deadline).await;
-                }
-            }, if deferred_deadline.is_some() => {
-                housing_sim::flows::flush_deferred_indoor_tail_on_timeout(&mut connection).await;
-            }
-            _ = async {
-                if let Some(deadline) = reentry_deadline {
-                    tokio::time::sleep_until(deadline).await;
-                }
-            }, if reentry_deadline.is_some() => {
-                housing_sim::flows::complete_pending_same_zone_indoor_reentry(&mut connection).await;
+            _ = housing_sim::hooks::sleep_until_optional(housing_deadline), if housing_deadline.is_some() => {
+                housing_sim::hooks::handle_housing_deadline(&mut connection).await;
             }
         }
     }
 
-    // Remove online simulator session before disconnecting.
-    if let Some(ref hub) = connection.housing_hub {
-        hub.remove_session(connection.id);
-    }
+    housing_sim::hooks::on_client_disconnect(&connection);
 
     // forcefully log out the player if they weren't logging out but force D/C'd
     if connection.player_data.character.actor_id.is_valid() {
@@ -4942,16 +4730,14 @@ async fn main() {
     }
 
     let (handle, _) = spawn_main_loop(game_data.clone(), database.clone());
-    let housing_hub = Arc::new(housing_sim::HousingSimHub::new(
+
+    // This is a static healthcheck meant for the Kawari Toolbox plugin.
+    let app = Router::new().route("/healthcheck", get(root));
+    let (housing_hub, app) = housing_sim::hooks::init_world_http(
         handle.clone(),
         database.clone(),
         game_data.clone(),
-    ));
-
-    // Healthcheck + Housing Simulator REST/SSE control API.
-    let app = Router::new().route("/healthcheck", get(root)).nest(
-        "/api/v1/housing",
-        housing_sim::http::router(housing_hub.clone()),
+        app,
     );
 
     let mut healthcheck_addr = addr;

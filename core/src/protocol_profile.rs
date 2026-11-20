@@ -9,6 +9,7 @@ use physis::existing_dirs::find_existing_game_dirs;
 use serde_derive::{Deserialize, Serialize};
 
 use crate::{
+    common::ItemOperationKind,
     constants::{
         LOBBY_GAME_VERSION, SUPPORTED_BOOT_VERSION, SUPPORTED_EXPAC_VERSIONS,
         SUPPORTED_GAME_VERSION,
@@ -18,6 +19,96 @@ use crate::{
         ServerLobbyIpcType, ServerZoneIpcType,
     },
 };
+
+/// Runtime protocol & patch-resilience configuration.
+#[derive(Serialize, Deserialize)]
+pub struct ProtocolConfig {
+    /// Optional explicit path to a YAML opcode/version override profile.
+    #[serde(default)]
+    pub profile_path: String,
+
+    /// Automatically read `.ver` files and scan `LOBBY_GAME_VERSION` from `filesystem.game_path`.
+    #[serde(default = "ProtocolConfig::default_true")]
+    pub auto_detect_client_version: bool,
+
+    /// Automatically extract `ZoneDown` vtable opcodes from `ffxiv_dx11.exe` when baseline matches.
+    #[serde(default = "ProtocolConfig::default_true")]
+    pub auto_extract_zonedown_opcodes: bool,
+}
+
+impl Default for ProtocolConfig {
+    fn default() -> Self {
+        Self {
+            profile_path: String::new(),
+            auto_detect_client_version: true,
+            auto_extract_zonedown_opcodes: true,
+        }
+    }
+}
+
+impl ProtocolConfig {
+    fn default_true() -> bool {
+        true
+    }
+}
+
+impl ItemOperationKind {
+    /// Converts this operation kind to its wire u32 value relative to runtime `ClientZoneIpcType::ItemOperation`.
+    pub fn to_wire(self) -> u32 {
+        match self {
+            Self::UnkDiscard | Self::UnkTrading2 | Self::UnkGearSetEquipped => self as u32,
+            other => ClientZoneIpcType::ItemOperation.get_opcode() as u32 + (other as u32),
+        }
+    }
+
+    /// Parses a wire u32 value relative to runtime `ClientZoneIpcType::ItemOperation`.
+    pub fn from_wire(raw: u32) -> Option<Self> {
+        let base = ClientZoneIpcType::ItemOperation.get_opcode() as u32;
+        if let Some(rel) = raw.checked_sub(base)
+            && (1..=19).contains(&rel)
+            && let Some(kind) = Self::from_repr(rel)
+        {
+            return Some(kind);
+        }
+
+        match raw {
+            0x90 => Some(Self::UnkDiscard),
+            256 => Some(Self::UnkTrading2),
+            567 => Some(Self::UnkGearSetEquipped),
+            _ => None,
+        }
+    }
+}
+
+impl binrw::BinRead for ItemOperationKind {
+    type Args<'a> = ();
+
+    fn read_options<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        endian: binrw::Endian,
+        args: Self::Args<'_>,
+    ) -> binrw::BinResult<Self> {
+        let pos = reader.stream_position()?;
+        let raw = u32::read_options(reader, endian, args)?;
+        Self::from_wire(raw).ok_or_else(|| binrw::Error::AssertFail {
+            pos,
+            message: format!("Unknown ItemOperationKind wire value {raw}"),
+        })
+    }
+}
+
+impl binrw::BinWrite for ItemOperationKind {
+    type Args<'a> = ();
+
+    fn write_options<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: &mut W,
+        endian: binrw::Endian,
+        args: Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        self.to_wire().write_options(writer, endian, args)
+    }
+}
 
 /// IPC domain backed by a generated opcode enum in [`crate::opcodes`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

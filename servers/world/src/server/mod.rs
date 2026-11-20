@@ -10,7 +10,7 @@ use std::{
 use tokio::sync::mpsc::Receiver;
 
 use crate::{
-    GameData, Navmesh,
+    GameData,
     lua::KawariLua,
     server::{
         action::{execute_action, handle_action_messages},
@@ -191,18 +191,9 @@ impl WorldServer {
 
     /// Removes instances without players or active navmesh jobs.
     fn cleanup_dead_instances(&mut self) {
-        self.instances.retain(should_retain_instance);
+        self.instances
+            .retain(crate::housing_sim::hooks::should_retain_instance);
     }
-}
-
-fn should_retain_instance(instance: &Instance) -> bool {
-    matches!(
-        instance.generate_navmesh,
-        NavmeshGenerationStep::Started { .. }
-    ) || instance
-        .actors
-        .iter()
-        .any(|x| matches!(x.1, NetworkedActor::Player { .. }))
 }
 
 fn server_logic_tick(
@@ -713,45 +704,14 @@ fn server_logic_tick(
                         }
                     }
                 }
-                NavmeshGenerationStep::Started { nvm_path, child } => match child.try_wait() {
-                    Ok(Some(status)) => {
-                        navmesh_finished = true;
-                        if status.success() {
-                            if let Ok(nvm_bytes) = std::fs::read(&*nvm_path) {
-                                if let Some(navmesh) = Navmesh::from_existing(&nvm_bytes) {
-                                    instance.navmesh = navmesh;
-                                    tracing::info!(
-                                        "Successfully loaded navimesh from {nvm_path:?}"
-                                    );
-                                } else {
-                                    tracing::warn!(
-                                        "Failed to read {nvm_path:?}, monsters will not function correctly!"
-                                    );
-                                }
-                            } else {
-                                tracing::warn!(
-                                    zone_id = instance.zone.id,
-                                    "kawari-navimesh exited successfully without writing {nvm_path:?}"
-                                );
-                            }
-                        } else {
-                            tracing::warn!(
-                                zone_id = instance.zone.id,
-                                status = %status,
-                                "kawari-navimesh exited without generating {nvm_path:?}; monsters will not use navmesh in this zone"
-                            );
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        navmesh_finished = true;
-                        tracing::warn!(
-                            zone_id = instance.zone.id,
-                            error = %err,
-                            "Failed polling kawari-navimesh status for {nvm_path:?}"
-                        );
-                    }
-                },
+                NavmeshGenerationStep::Started { nvm_path, child } => {
+                    navmesh_finished = crate::housing_sim::hooks::poll_started_navmesh_generation(
+                        instance.zone.id,
+                        nvm_path,
+                        child,
+                        &mut instance.navmesh,
+                    );
+                }
             }
             if navmesh_finished {
                 instance.generate_navmesh = NavmeshGenerationStep::None;
@@ -2708,25 +2668,4 @@ pub async fn server_main_loop(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cleanup_dead_instances_retains_player_and_active_navmesh_instances() {
-        let mut empty = Instance::default();
-        assert!(!should_retain_instance(&empty));
-
-        empty.generate_navmesh = NavmeshGenerationStep::Needed("missing.nvm".to_string());
-        assert!(!should_retain_instance(&empty));
-
-        let mut with_player = Instance::default();
-        with_player.insert_empty_actor(ObjectId(1));
-        assert!(should_retain_instance(&with_player));
-
-        with_player.generate_navmesh = NavmeshGenerationStep::Needed("pending.nvm".to_string());
-        assert!(should_retain_instance(&with_player));
-    }
 }

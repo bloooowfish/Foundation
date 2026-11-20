@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use serde_derive::{Deserialize, Serialize};
 use strum_macros::{Display, EnumIter, EnumString, FromRepr};
 
-use crate::{festivals::festival_name, ipc::zone::DutyFinderSetting, opcodes::ClientZoneIpcType};
+use crate::{festivals::festival_name, ipc::zone::DutyFinderSetting};
 
 /// Maxmimum length of a character's name.
 pub const CHAR_NAME_MAX_LENGTH: usize = 32;
@@ -771,64 +771,6 @@ pub enum ItemOperationKind {
     UnkTrading2 = 256,
     /// Seen while equipping gearsets. TODO: probably wrong
     UnkGearSetEquipped = 567,
-}
-
-impl ItemOperationKind {
-    /// Converts this operation kind to its wire u32 value relative to runtime `ClientZoneIpcType::ItemOperation`.
-    pub fn to_wire(self) -> u32 {
-        match self {
-            Self::UnkDiscard | Self::UnkTrading2 | Self::UnkGearSetEquipped => self as u32,
-            other => ClientZoneIpcType::ItemOperation.get_opcode() as u32 + (other as u32),
-        }
-    }
-
-    /// Parses a wire u32 value relative to runtime `ClientZoneIpcType::ItemOperation`.
-    pub fn from_wire(raw: u32) -> Option<Self> {
-        let base = ClientZoneIpcType::ItemOperation.get_opcode() as u32;
-        if let Some(rel) = raw.checked_sub(base)
-            && (1..=19).contains(&rel)
-            && let Some(kind) = Self::from_repr(rel)
-        {
-            return Some(kind);
-        }
-
-        match raw {
-            0x90 => Some(Self::UnkDiscard),
-            256 => Some(Self::UnkTrading2),
-            567 => Some(Self::UnkGearSetEquipped),
-            _ => None,
-        }
-    }
-}
-
-impl BinRead for ItemOperationKind {
-    type Args<'a> = ();
-
-    fn read_options<R: std::io::Read + std::io::Seek>(
-        reader: &mut R,
-        endian: binrw::Endian,
-        args: Self::Args<'_>,
-    ) -> binrw::BinResult<Self> {
-        let pos = reader.stream_position()?;
-        let raw = u32::read_options(reader, endian, args)?;
-        Self::from_wire(raw).ok_or_else(|| binrw::Error::AssertFail {
-            pos,
-            message: format!("Unknown ItemOperationKind wire value {raw}"),
-        })
-    }
-}
-
-impl BinWrite for ItemOperationKind {
-    type Args<'a> = ();
-
-    fn write_options<W: std::io::Write + std::io::Seek>(
-        &self,
-        writer: &mut W,
-        endian: binrw::Endian,
-        args: Self::Args<'_>,
-    ) -> binrw::BinResult<()> {
-        self.to_wire().write_options(writer, endian, args)
-    }
 }
 
 /// Useful pre-defined log messages. Feel free to add any ones we need. Index into the LogMessage Excel sheet.

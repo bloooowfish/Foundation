@@ -247,17 +247,4 @@ mod tests {
         assert_eq!(bitmask.contains(0), true);
         assert_eq!(bitmask.contains(1), true);
     }
-
-    #[test]
-    fn legacy_short_bitmask_is_bounds_safe() {
-        let mut bitmask: Bitmask<8> = Bitmask::from(vec![1u8, 0u8]);
-        assert_eq!(bitmask.data.len(), 8);
-        assert!(bitmask.contains(0));
-        assert!(!bitmask.contains(5000));
-        bitmask.clear(5000);
-        bitmask.set(100);
-        assert!(bitmask.contains(100));
-        assert!(bitmask.toggle(120));
-        assert!(bitmask.contains(120));
-    }
 }
