@@ -215,7 +215,9 @@ pub fn init_world_http(
     app: Router,
 ) -> (Arc<HousingSimHub>, Router) {
     let housing_hub = Arc::new(HousingSimHub::new(handle, database, game_data));
-    let app = app.nest("/api/v1/housing", super::http::router(housing_hub.clone()));
+    let app = app
+        .merge(super::web_ui::router())
+        .nest("/api/v1/housing", super::http::router(housing_hub.clone()));
     (housing_hub, app)
 }
 

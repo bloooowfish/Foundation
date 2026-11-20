@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Foundation Housing Studio</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Sticky Header -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand">
+          <span class="brand-mark">FH</span>
+          <div class="brand-text">
+            <strong>Foundation Housing Studio</strong>
+            <span class="badge badge-muted" id="protocolPatchBadge">7.58</span>
+          </div>
+        </div>
+
+        <div class="sse-pill" id="sseStatusPill" title="서버 실시간 이벤트 스트림 상태">
+          <span class="dot dot-warn" id="sseDot"></span>
+          <span id="sseStatusText">서버 연결 확인 중...</span>
+        </div>
+
+        <button class="session-pill" id="activeSessionPill" type="button" title="클릭하면 현재 게임 내 접속 하우스를 선택합니다">
+          <span class="session-pill-main" id="sessionPlayerText">캐릭터 로그인 대기 중</span>
+          <span class="session-pill-sub" id="sessionEstateText">오프라인 또는 미접속</span>
+        </button>
+      </div>
+
+      <div class="topbar-actions">
+        <button class="btn btn-success btn-sm" id="btnUnlockAll" type="button" title="GM 권한, 길, 에테라이트, 퀘스트, 오케스트리온, 전체 클래스 Lv100 해금">캐릭터 전체 해금</button>
+        <button class="btn btn-secondary btn-sm" data-give-kit="indoor" type="button">실내 키트</button>
+        <button class="btn btn-secondary btn-sm" data-give-kit="outdoor" type="button">정원 키트</button>
+        <button class="btn btn-secondary btn-sm" data-give-kit="npc" type="button">고용인 키트</button>
+        <button class="btn btn-ghost btn-sm" id="btnRefreshAll" type="button">새로고침</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <!-- Left Sidebar Navigation & Pinned Active Selection -->
+      <aside class="sidebar">
+        <nav class="nav-list" aria-label="주 메뉴">
+          <button class="nav-item active" data-tab="estates" type="button">
+            <span>하우스 관리</span>
+            <span class="nav-count" id="navCountEstates">0</span>
+          </button>
+          <button class="nav-item" data-tab="presets" type="button">
+            <span>프리셋 라이브러리</span>
+            <span class="nav-count" id="navCountPresets">0</span>
+          </button>
+          <button class="nav-item" data-tab="furniture" type="button">
+            <span>가구 인스펙터</span>
+            <span class="nav-count" id="navCountFurniture">0</span>
+          </button>
+          <button class="nav-item" data-tab="environment" type="button">
+            <span>환경 · 스냅샷</span>
+            <span class="nav-count" id="navCountSnapshots">0</span>
+          </button>
+          <button class="nav-item" data-tab="logs" type="button">
+            <span>실시간 로그</span>
+            <span class="nav-count" id="navCountLogs">0</span>
+          </button>
+        </nav>
+
+        <section class="selected-card" id="sidebarSelectedCard">
+          <div class="selected-card-header">
+            <span class="eyebrow">선택된 작업 대상</span>
+            <span class="badge badge-accent" id="sidebarSizeBadge">미선택</span>
+          </div>
+          <h2 class="selected-title" id="sidebarEstateTitle">하우스를 선택하세요</h2>
+          <p class="selected-sub" id="sidebarEstateSub">목록에서 하우스를 선택하면 상세 제어와 프리셋 적용이 활성화됩니다.</p>
+          <div class="selected-stats" id="sidebarEstateStats"></div>
+          <div class="selected-actions">
+            <button class="btn btn-primary btn-sm" id="sidebarBtnEnter" type="button" disabled>실내 입장</button>
+            <button class="btn btn-secondary btn-sm" id="sidebarBtnExit" type="button" disabled>정문 이동</button>
+            <button class="btn btn-secondary btn-sm" id="sidebarBtnReload" type="button" disabled>강제 리로드</button>
+            <button class="btn btn-secondary btn-sm" id="sidebarBtnUndo" type="button" disabled>실행 취소</button>
+          </div>
+        </section>
+      </aside>
+
+      <!-- Main Tab Views -->
+      <main class="main-pane">
+        <!-- VIEW 1: ESTATES MANAGER -->
+        <section class="tab-view active" id="view-estates">
+          <div class="view-header">
+            <div>
+              <h1>하우스 관리</h1>
+              <p class="muted">다수의 테스트 하우스·아파트를 검색·필터·즐겨찾기하고 원클릭으로 생성하거나 워프할 수 있습니다.</p>
+            </div>
+            <div class="view-header-actions">
+              <button class="btn btn-primary" id="btnToggleCreateEstate" type="button">+ 새 하우스 생성 · 이동</button>
+            </div>
+          </div>
+
+          <!-- Collapsible Create / Quick Warp Panel -->
+          <div class="panel hidden" id="createEstatePanel">
+            <div class="panel-header">
+              <h3>새 하우스 / 아파트 생성 또는 즉시 이동</h3>
+              <button class="btn btn-ghost btn-xs" id="btnCloseCreateEstate" type="button">닫기</button>
+            </div>
+            <div class="form-grid form-grid-4">
+              <label class="field">
+                <span>거주구</span>
+                <select id="createDistrict">
+                  <option value="mist">안개빛 마을 (Mist)</option>
+                  <option value="lavender" selected>라벤더 안식처 (Lavender Beds)</option>
+                  <option value="goblet">하늘잔 마루 (Goblet)</option>
+                  <option value="shirogane">시로가네 (Shirogane)</option>
+                  <option value="empyreum">엠피레움 (Empyreum)</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>구역 구분</span>
+                <select id="createDivision">
+                  <option value="0" selected>본구 (1~30번지)</option>
+                  <option value="1">확장구 (31~60번지)</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>크기 / 유형</span>
+                <select id="createSize">
+                  <option value="0">소형 (S)</option>
+                  <option value="1">중형 (M)</option>
+                  <option value="2" selected>대형 (L)</option>
+                  <option value="apartment">아파트</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>구 (1~30)</span>
+                <input id="createWard" type="number" min="1" max="30" value="1" />
+              </label>
+              <label class="field">
+                <span>번지 / 호실 (선택)</span>
+                <input id="createPlotOrRoom" type="number" min="1" max="90" placeholder="비우면 크기 맞춤 자동 선택" />
+              </label>
+              <label class="field">
+                <span>하우스 이름 (선택)</span>
+                <input id="createEstateName" type="text" maxlength="40" placeholder="최대 20바이트 (선택)" />
+              </label>
+              <label class="field">
+                <span>소유자 이름 (선택)</span>
+                <input id="createOwnerName" type="text" maxlength="30" placeholder="비우면 현재 캐릭터/Simulator" />
+              </label>
+              <div class="field-actions">
+                <button class="btn btn-secondary" id="btnCreateEnsureOnly" type="button">생성만 하기</button>
+                <button class="btn btn-success" id="btnCreateAndEnter" type="button">생성 후 실내 입장</button>
+                <button class="btn btn-primary" id="btnCreateAndOutside" type="button">정문으로 이동</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Filter & Toolbar -->
+          <div class="toolbar">
+            <input class="search-input" id="estatesSearchInput" type="search" placeholder="하우스 이름, 소유자, 구역, 구/번지, 메모, land_ident 검색..." />
+            <select id="estatesDistrictFilter">
+              <option value="all">모든 거주구</option>
+              <option value="339">안개빛 마을</option>
+              <option value="340">라벤더 안식처</option>
+              <option value="341">하늘잔 마루</option>
+              <option value="641">시로가네</option>
+              <option value="979">엠피레움</option>
+            </select>
+            <select id="estatesSizeFilter">
+              <option value="all">모든 크기</option>
+              <option value="0">소형</option>
+              <option value="1">중형</option>
+              <option value="2">대형</option>
+              <option value="apartment">아파트</option>
+            </select>
+            <select id="estatesSortSelect">
+              <option value="updated">최근 수정순</option>
+              <option value="location">거주구 · 구 · 번지순</option>
+              <option value="name">이름순</option>
+              <option value="furniture">가구 수 많은순</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" id="btnEstatesFavOnly" type="button" aria-pressed="false">★ 즐겨찾기만</button>
+            <div class="segmented" role="group" aria-label="보기 방식">
+              <button class="seg-btn active" id="btnViewCards" type="button">카드</button>
+              <button class="seg-btn" id="btnViewTable" type="button">테이블</button>
+            </div>
+          </div>
+
+          <div id="estatesContainer" class="estates-grid"></div>
+        </section>
+
+        <!-- VIEW 2: PRESETS LIBRARY & DROPZONE -->
+        <section class="tab-view" id="view-presets">
+          <div class="view-header">
+            <div>
+              <h1>프리셋 라이브러리</h1>
+              <p class="muted">ReMakePlace JSON 파일을 드래그앤드롭하거나 서버·로컬 프리셋을 미리보기·적용·내보내기합니다.</p>
+            </div>
+          </div>
+
+          <!-- Target Estate & Compatibility Bar -->
+          <div class="panel">
+            <div class="target-bar">
+              <label class="field target-select-field">
+                <span>적용 대상 하우스</span>
+                <select id="presetTargetSelect"></select>
+              </label>
+              <button class="btn btn-secondary btn-sm" id="btnPresetSyncActive" type="button">현재 게임 위치로 맞춤</button>
+              <button class="btn btn-secondary btn-sm hidden" id="btnPresetAutoMatch" type="button">맞는 크기 하우스 선택</button>
+            </div>
+            <div class="compat-banner" id="presetCompatBanner">대상 하우스와 프리셋을 선택하면 크기 호환성을 확인합니다.</div>
+          </div>
+
+          <!-- Drag & Drop + File Pickers -->
+          <div class="dropzone" id="presetDropZone" tabindex="0">
+            <div class="dropzone-content">
+              <strong>ReMakePlace `.json` 파일을 여기에 드래그앤드롭하세요</strong>
+              <span class="muted">UTF-8 / UTF-16LE / UTF-16BE 인코딩과 중첩 attachments를 자동 분석합니다 (최대 16MB).</span>
+            </div>
+            <div class="dropzone-actions">
+              <input id="presetFilesInput" type="file" accept=".json,application/json" multiple hidden />
+              <input id="presetFolderInput" type="file" webkitdirectory directory multiple hidden />
+              <button class="btn btn-primary btn-sm" id="btnPickPresetFiles" type="button">JSON 파일 열기</button>
+              <button class="btn btn-secondary btn-sm" id="btnPickPresetFolder" type="button">로컬 폴더 불러오기</button>
+              <button class="btn btn-ghost btn-sm" id="btnRefreshServerPresets" type="button">서버 프리셋 새로고침</button>
+            </div>
+          </div>
+
+          <div class="split-layout">
+            <!-- Left: Preset List -->
+            <div class="panel split-left">
+              <div class="toolbar toolbar-compact">
+                <input class="search-input" id="presetsSearchInput" type="search" placeholder="프리셋 이름 · 스타일 · 구역 검색..." />
+                <select id="presetsSizeFilter">
+                  <option value="all">모든 크기</option>
+                  <option value="0">소형</option>
+                  <option value="1">중형</option>
+                  <option value="2">대형</option>
+                  <option value="apartment">아파트</option>
+                </select>
+              </div>
+              <div class="preset-list" id="presetList"></div>
+            </div>
+
+            <!-- Right: Preset Inspector & Export -->
+            <div class="split-right stack">
+              <div class="panel">
+                <div class="panel-header">
+                  <h3 id="presetDetailTitle">선택된 프리셋 없음</h3>
+                  <span class="badge badge-accent" id="presetDetailBadge">미선택</span>
+                </div>
+                <p class="preset-counts" id="presetDetailCounts">왼쪽 목록에서 프리셋을 선택하거나 JSON 파일을 드롭하세요.</p>
+                <div class="fixture-summary" id="presetDetailFixtures"></div>
+
+                <div class="form-grid form-grid-2">
+                  <label class="field">
+                    <span>적용 범위</span>
+                    <select id="presetScopeSelect">
+                      <option value="all" selected>전체 (실내 + 정원)</option>
+                      <option value="interior">실내만 적용</option>
+                      <option value="exterior">정원만 적용</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>반영 방식</span>
+                    <select id="presetReloadSelect">
+                      <option value="auto" selected>자동 (권장)</option>
+                      <option value="live_packets">무로딩 패킷</option>
+                      <option value="zone_reload">존 리로드</option>
+                      <option value="none">DB만 저장</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="inline-options">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="presetPreservePos" checked />
+                    <span>리로드 시 플레이어 현재 위치 유지</span>
+                  </label>
+                </div>
+
+                <div class="button-row">
+                  <button class="btn btn-secondary" id="btnPreviewPreset" type="button">호환성 정밀 검증</button>
+                  <button class="btn btn-success" id="btnApplyPreset" type="button">선택 하우스에 적용</button>
+                </div>
+
+                <div class="preview-report hidden" id="presetPreviewReport"></div>
+              </div>
+
+              <!-- Export Box -->
+              <div class="panel">
+                <div class="panel-header">
+                  <h3>ReMakePlace JSON 내보내기</h3>
+                </div>
+                <div class="form-grid form-grid-2">
+                  <label class="field">
+                    <span>내보내기 범위</span>
+                    <select id="exportScopeSelect">
+                      <option value="all" selected>전체 (실내 + 정원)</option>
+                      <option value="interior">실내만</option>
+                      <option value="exterior">정원만</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>파일 이름 (.json)</span>
+                    <input id="exportFilenameInput" type="text" placeholder="예: my_mansion_export.json" />
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button class="btn btn-primary btn-sm" id="btnExportDownload" type="button">브라우저로 다운로드</button>
+                  <button class="btn btn-secondary btn-sm" id="btnExportSaveServer" type="button">서버 폴더(`housing-exports`)에 저장</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 3: FURNITURE INSPECTOR & LIVE TRANSFORM -->
+        <section class="tab-view" id="view-furniture">
+          <div class="view-header">
+            <div>
+              <h1>배치 가구 인스펙터 · 실시간 좌표 미세조정</h1>
+              <p class="muted">현재 선택된 하우스에 배치된 실내/정원 가구 좌표와 각도를 검색하고 인게임에 즉시 반영합니다.</p>
+            </div>
+            <div class="view-header-actions">
+              <button class="btn btn-secondary btn-sm" id="btnRefreshFurniture" type="button">가구 목록 새로고침</button>
+            </div>
+          </div>
+
+          <div class="split-layout inspector-layout">
+            <div class="panel split-left">
+              <div class="toolbar toolbar-compact">
+                <div class="segmented" role="group" aria-label="실내/정원 전환">
+                  <button class="seg-btn active" id="btnFurnScopeIndoor" type="button">실내 (<span id="furnIndoorCount">0</span>)</button>
+                  <button class="seg-btn" id="btnFurnScopeOutdoor" type="button">정원 (<span id="furnOutdoorCount">0</span>)</button>
+                </div>
+                <input class="search-input" id="furnSearchInput" type="search" placeholder="가구 이름, 아이템 ID, 슬롯 검색..." />
+                <label class="checkbox-label">
+                  <input type="checkbox" id="furnDyedOnly" />
+                  <span>염색만</span>
+                </label>
+                <select id="furnSortSelect">
+                  <option value="slot">슬롯순</option>
+                  <option value="name">이름순</option>
+                  <option value="y">높이(Y)순</option>
+                </select>
+              </div>
+
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>슬롯</th>
+                      <th>가구 이름</th>
+                      <th>아이템</th>
+                      <th>염색</th>
+                      <th>X</th>
+                      <th>Y</th>
+                      <th>Z</th>
+                      <th>각도</th>
+                    </tr>
+                  </thead>
+                  <tbody id="furnitureTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Live Transform Editor -->
+            <div class="panel split-right stack" id="transformPanel">
+              <div class="panel-header">
+                <div>
+                  <h3 id="tfItemName">가구를 선택하세요</h3>
+                  <span class="muted small-text" id="tfItemMeta">왼쪽 표에서 가구 행을 클릭하면 실시간 좌표·회전 조절기가 열립니다.</span>
+                </div>
+                <span class="badge badge-muted" id="tfSlotBadge">-</span>
+              </div>
+
+              <div class="inline-options">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="tfAutoPreview" checked />
+                  <span>조작 즉시 인게임 실시간 미리보기</span>
+                </label>
+                <label class="checkbox-label hidden" id="tfPlotLocalWrap">
+                  <input type="checkbox" id="tfPlotLocal" checked />
+                  <span>정원 부지 로컬 좌표 기준</span>
+                </label>
+              </div>
+
+              <div class="axis-group">
+                <div class="axis-row">
+                  <label class="axis-label">X</label>
+                  <input class="axis-input" id="tfPosX" type="number" step="0.01" />
+                  <div class="nudge-group">
+                    <button class="btn-nudge" data-axis="x" data-delta="-1" type="button">-1</button>
+                    <button class="btn-nudge" data-axis="x" data-delta="-0.1" type="button">-0.1</button>
+                    <button class="btn-nudge" data-axis="x" data-delta="-0.01" type="button">-0.01</button>
+                    <button class="btn-nudge" data-axis="x" data-delta="0.01" type="button">+0.01</button>
+                    <button class="btn-nudge" data-axis="x" data-delta="0.1" type="button">+0.1</button>
+                    <button class="btn-nudge" data-axis="x" data-delta="1" type="button">+1</button>
+                  </div>
+                </div>
+                <div class="axis-row">
+                  <label class="axis-label">Y (높이)</label>
+                  <input class="axis-input" id="tfPosY" type="number" step="0.01" />
+                  <div class="nudge-group">
+                    <button class="btn-nudge" data-axis="y" data-delta="-1" type="button">-1</button>
+                    <button class="btn-nudge" data-axis="y" data-delta="-0.1" type="button">-0.1</button>
+                    <button class="btn-nudge" data-axis="y" data-delta="-0.01" type="button">-0.01</button>
+                    <button class="btn-nudge" data-axis="y" data-delta="0.01" type="button">+0.01</button>
+                    <button class="btn-nudge" data-axis="y" data-delta="0.1" type="button">+0.1</button>
+                    <button class="btn-nudge" data-axis="y" data-delta="1" type="button">+1</button>
+                  </div>
+                </div>
+                <div class="axis-row">
+                  <label class="axis-label">Z</label>
+                  <input class="axis-input" id="tfPosZ" type="number" step="0.01" />
+                  <div class="nudge-group">
+                    <button class="btn-nudge" data-axis="z" data-delta="-1" type="button">-1</button>
+                    <button class="btn-nudge" data-axis="z" data-delta="-0.1" type="button">-0.1</button>
+                    <button class="btn-nudge" data-axis="z" data-delta="-0.01" type="button">-0.01</button>
+                    <button class="btn-nudge" data-axis="z" data-delta="0.01" type="button">+0.01</button>
+                    <button class="btn-nudge" data-axis="z" data-delta="0.1" type="button">+0.1</button>
+                    <button class="btn-nudge" data-axis="z" data-delta="1" type="button">+1</button>
+                  </div>
+                </div>
+                <div class="axis-row">
+                  <label class="axis-label">회전 (°)</label>
+                  <input class="axis-input" id="tfRotDeg" type="number" step="1" min="-180" max="180" />
+                  <div class="nudge-group">
+                    <button class="btn-nudge" data-axis="rot" data-delta="-45" type="button">-45°</button>
+                    <button class="btn-nudge" data-axis="rot" data-delta="-15" type="button">-15°</button>
+                    <button class="btn-nudge" data-axis="rot" data-delta="-1" type="button">-1°</button>
+                    <button class="btn-nudge" data-axis="rot" data-delta="1" type="button">+1°</button>
+                    <button class="btn-nudge" data-axis="rot" data-delta="15" type="button">+15°</button>
+                    <button class="btn-nudge" data-axis="rot" data-delta="45" type="button">+45°</button>
+                  </div>
+                </div>
+                <input id="tfRotSlider" type="range" min="-180" max="180" step="0.5" value="0" />
+              </div>
+
+              <div class="button-row">
+                <button class="btn btn-secondary" id="btnTfRevert" type="button" disabled>원래 좌표로</button>
+                <button class="btn btn-success" id="btnTfCommit" type="button" disabled>DB 저장 &amp; RMP 반영</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 4: ENVIRONMENT & SNAPSHOTS -->
+        <section class="tab-view" id="view-environment">
+          <div class="view-header">
+            <div>
+              <h1>환경 설정 · 스냅샷 타임라인</h1>
+              <p class="muted">실내 조명, SSAO, 방문자 공개 설정, 내장재 양식, 이름·인사말 및 시점별 스냅샷 복원을 관리합니다.</p>
+            </div>
+          </div>
+
+          <div class="env-grid">
+            <!-- Left column: Environment & Danger Actions -->
+            <div class="stack">
+              <div class="panel">
+                <div class="panel-header">
+                  <h3>실내 조명 · 옵션</h3>
+                </div>
+                <div class="field">
+                  <span>실내 조명 밝기 (0 = 가장 밝음, 5 = 가장 어두움)</span>
+                  <div class="light-pills" id="envLightPills">
+                    <button class="seg-btn" data-light="0" type="button">0</button>
+                    <button class="seg-btn" data-light="1" type="button">1</button>
+                    <button class="seg-btn" data-light="2" type="button">2</button>
+                    <button class="seg-btn" data-light="3" type="button">3</button>
+                    <button class="seg-btn" data-light="4" type="button">4</button>
+                    <button class="seg-btn" data-light="5" type="button">5</button>
+                  </div>
+                </div>
+                <div class="inline-options">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="envSsaoCheck" checked />
+                    <span>SSAO 그림자 효과</span>
+                  </label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="envVisitorsCheck" checked />
+                    <span>방문자 입장 허용 (OPEN)</span>
+                  </label>
+                </div>
+                <div class="form-grid form-grid-2">
+                  <label class="field">
+                    <span>실내 내장재 양식</span>
+                    <select id="envStyleSelect">
+                      <option value="mist">안개빛 마을 양식</option>
+                      <option value="lavender beds">라벤더 안식처 양식</option>
+                      <option value="goblet">하늘잔 마루 양식</option>
+                      <option value="shirogane">시로가네 양식</option>
+                      <option value="empyreum">엠피레움 양식</option>
+                      <option value="minimalist">심플 (화이트) 양식</option>
+                      <option value="dark minimalist">심플 (다크) 양식</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>변경 반영 방식</span>
+                    <select id="envReloadSelect">
+                      <option value="live_packets" selected>즉시 패킷 반영</option>
+                      <option value="zone_reload">존 리로드</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button class="btn btn-primary" id="btnEnvSaveLight" type="button">조명 · 옵션 반영</button>
+                  <button class="btn btn-secondary" id="btnEnvApplyStyle" type="button">내장재 양식 적용</button>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-header">
+                  <h3>하우스 이름 · 인사말 · 메모</h3>
+                </div>
+                <label class="field">
+                  <span>하우스 이름 (<em id="envNameBytes">0</em>/20 bytes)</span>
+                  <input id="envNameInput" type="text" placeholder="최대 20 UTF-8 바이트" />
+                </label>
+                <label class="field">
+                  <span>인사말 (<em id="envGreetingBytes">0</em>/192 bytes)</span>
+                  <textarea id="envGreetingInput" rows="3" placeholder="방문자에게 표시될 인사말 (최대 192 UTF-8 바이트)"></textarea>
+                </label>
+                <label class="field">
+                  <span>개인 관리 메모 / 태그 (브라우저 저장)</span>
+                  <input id="envMemoInput" type="text" placeholder="예: 촬영용 카페, 미완성 정원" />
+                </label>
+                <div class="button-row">
+                  <button class="btn btn-primary" id="btnEnvSaveMeta" type="button">이름 · 인사말 저장</button>
+                  <button class="btn btn-secondary" id="btnEnvSaveMemo" type="button">로컬 메모만 저장</button>
+                </div>
+              </div>
+
+              <details class="panel" id="envFixturesDetails">
+                <summary class="details-summary">현재 내·외장재 ID 상세 보기</summary>
+                <div class="fixture-detail-grid" id="envFixturesContent"></div>
+              </details>
+
+              <div class="panel panel-danger">
+                <div class="panel-header">
+                  <h3>초기화 · 리로드 · 삭제</h3>
+                </div>
+                <div class="button-row">
+                  <button class="btn btn-secondary btn-sm" id="btnResetIndoor" type="button">실내만 비우기</button>
+                  <button class="btn btn-secondary btn-sm" id="btnResetExterior" type="button">정원만 비우기</button>
+                  <button class="btn btn-danger btn-sm" id="btnResetAll" type="button">전체 비우기</button>
+                  <button class="btn btn-secondary btn-sm" id="btnEnvForceReload" type="button">강제 존 리로드</button>
+                  <button class="btn btn-danger btn-sm" id="btnDeleteEstate" type="button">하우스 영구 삭제</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right column: Snapshot Timeline -->
+            <div class="panel stack">
+              <div class="panel-header">
+                <h3>스냅샷 타임라인 (최대 25개)</h3>
+                <button class="btn btn-secondary btn-sm" id="btnSnapshotUndo" type="button">최근 실행 취소 (Undo)</button>
+              </div>
+              <div class="snapshot-create-row">
+                <input id="snapshotLabelInput" type="text" placeholder="스냅샷 라벨 (비우면 '수동 스냅샷')" />
+                <button class="btn btn-primary btn-sm" id="btnSnapshotCreate" type="button">현재 상태 저장</button>
+              </div>
+              <div class="snapshot-timeline" id="snapshotTimeline"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 5: REALTIME SSE LOGS -->
+        <section class="tab-view" id="view-logs">
+          <div class="view-header">
+            <div>
+              <h1>실시간 활동 · 동기화 로그</h1>
+              <p class="muted">ReMakePlace 브리지, 프리셋 적용, 가구 이동, 세션 상태를 실시간 SSE 스트림으로 기록합니다.</p>
+            </div>
+            <div class="view-header-actions">
+              <button class="btn btn-secondary btn-sm" id="btnCopyLogs" type="button">전체 복사</button>
+              <button class="btn btn-secondary btn-sm" id="btnClearLogs" type="button">비우기</button>
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <div class="segmented" id="logCategoryFilter" role="group">
+              <button class="seg-btn active" data-log-cat="all" type="button">전체</button>
+              <button class="seg-btn" data-log-cat="session" type="button">세션</button>
+              <button class="seg-btn" data-log-cat="preset" type="button">프리셋</button>
+              <button class="seg-btn" data-log-cat="furniture" type="button">가구/RMP</button>
+              <button class="seg-btn" data-log-cat="env" type="button">환경/스냅샷</button>
+            </div>
+            <input class="search-input" id="logsSearchInput" type="search" placeholder="메시지, 소스(rmp/web_ui), 하우스 ID 검색..." />
+          </div>
+
+          <div class="log-feed" id="logFeed"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div class="modal-backdrop hidden" id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+    <div class="modal-card">
+      <h3 id="confirmModalTitle">작업 확인</h3>
+      <p id="confirmModalMessage"></p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="confirmModalCancel" type="button">취소</button>
+        <button class="btn btn-danger" id="confirmModalOk" type="button">확인</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Stack -->
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>

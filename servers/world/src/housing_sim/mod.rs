@@ -15,6 +15,7 @@ pub mod remake_place;
 pub mod session;
 #[cfg(test)]
 mod upstream_guard_tests;
+pub mod web_ui;
 
 pub use session::{
     ActiveEstateSelection, HousingBridgeDelta, HousingBridgeMoveItem, HousingSimFromServer,

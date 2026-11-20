@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -23,9 +23,9 @@ use super::containers::{
 use super::db::{
     EnsureEstateSpec, EstateRemakeMeta, FurnitureRemakeMeta, HousingEstateRow, HousingFurnitureRow,
     MAX_ESTATE_GREETING_BYTES, MAX_ESTATE_NAME_BYTES, SnapshotSummary, clamp_utf8, create_snapshot,
-    ensure_estate, estate_by_land_ident, list_all_estates, list_furniture_for_estate,
-    list_placed_furniture_in_scope, list_snapshots, reset_estate_scope, restore_latest_snapshot,
-    restore_snapshot, save_estate, update_furniture_position,
+    delete_estate_and_furniture, ensure_estate, estate_by_land_ident, list_all_estates,
+    list_furniture_for_estate, list_placed_furniture_in_scope, list_snapshots, reset_estate_scope,
+    restore_latest_snapshot, restore_snapshot, save_estate, update_furniture_position,
 };
 use super::fixtures::{StoredHouseExterior, StoredHouseInterior};
 use super::flows::{
@@ -73,7 +73,9 @@ pub fn router(hub: Arc<HousingSimHub>) -> Router {
         .route("/estates/ensure", post(ensure_estate_handler))
         .route(
             "/estates/{land_ident}",
-            get(get_estate_handler).patch(patch_estate_handler),
+            get(get_estate_handler)
+                .patch(patch_estate_handler)
+                .delete(delete_estate_handler),
         )
         .route("/estates/{land_ident}/reset", post(reset_estate_handler))
         .route("/estates/{land_ident}/reload", post(reload_estate_handler))
@@ -85,7 +87,7 @@ pub fn router(hub: Arc<HousingSimHub>) -> Router {
         )
         .route(
             "/estates/{land_ident}/snapshots",
-            get(list_snapshots_handler),
+            get(list_snapshots_handler).post(create_snapshot_handler),
         )
         .route(
             "/estates/{land_ident}/snapshots/{snapshot_id}/restore",
@@ -101,6 +103,7 @@ pub fn router(hub: Arc<HousingSimHub>) -> Router {
             get(bridge_snapshot_handler),
         )
         .route("/estates/{land_ident}/live/move", post(live_move_handler))
+        .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(CorsLayer::permissive())
         .with_state(hub)
 }
@@ -745,6 +748,32 @@ async fn patch_estate_handler(
     Ok(Json(updated))
 }
 
+async fn delete_estate_handler(
+    State(hub): State<Arc<HousingSimHub>>,
+    Path(land_ident): Path<i32>,
+) -> ApiResult<serde_json::Value> {
+    let deleted = {
+        let mut db = hub.database.lock();
+        delete_estate_and_furniture(db.connection_mut(), land_ident)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
+
+    if deleted == 0 {
+        return Err(api_err(StatusCode::NOT_FOUND, "Estate not found"));
+    }
+
+    hub.emit_event(HousingSseEvent::new(
+        "estate_deleted",
+        Some(land_ident),
+        format!("하우스 #{land_ident} 삭제 완료"),
+    ));
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "land_ident": land_ident,
+    })))
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct ResetEstateRequest {
@@ -1061,6 +1090,61 @@ async fn list_snapshots_handler(
     list_snapshots(db.connection_mut(), land_ident)
         .map(Json)
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct CreateSnapshotRequest {
+    pub label: Option<String>,
+}
+
+async fn create_snapshot_handler(
+    State(hub): State<Arc<HousingSimHub>>,
+    Path(land_ident): Path<i32>,
+    body: Option<Json<CreateSnapshotRequest>>,
+) -> ApiResult<SnapshotSummary> {
+    let raw_label = body
+        .and_then(|b| b.0.label)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let label = if raw_label.is_empty() {
+        "수동 스냅샷".to_string()
+    } else {
+        clamp_utf8(&raw_label, 80)
+    };
+
+    let summary = {
+        let mut db = hub.database.lock();
+        let conn = db.connection_mut();
+        let snap_id = match create_snapshot(conn, land_ident, &label) {
+            Ok(id) => id,
+            Err(diesel::result::Error::NotFound) => {
+                return Err(api_err(StatusCode::NOT_FOUND, "Estate not found"));
+            }
+            Err(e) => {
+                return Err(api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            }
+        };
+        list_snapshots(conn, land_ident)
+            .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .into_iter()
+            .find(|s| s.id == snap_id)
+            .unwrap_or(SnapshotSummary {
+                id: snap_id,
+                land_ident,
+                label: label.clone(),
+                created_at: 0,
+            })
+    };
+
+    hub.emit_event(HousingSseEvent::new(
+        "snapshot_created",
+        Some(land_ident),
+        format!("스냅샷 저장 완료 (#{} · {})", summary.id, summary.label),
+    ));
+
+    Ok(Json(summary))
 }
 
 #[derive(Deserialize, Default)]
@@ -2129,11 +2213,68 @@ mod tests {
         assert!((snap.indoor[0].ue_loc[2] - 125.0).abs() < 0.1);
         assert!((snap.indoor[0].ue_yaw_deg - (-0.75f32.to_degrees())).abs() < 0.1);
 
-        assert_eq!(snap.outdoor.len(), 1);
+        assert!(snap.outdoor.len() == 1);
         assert_eq!(snap.outdoor[0].flat_slot, 0);
         assert!((snap.outdoor[0].ue_loc[0] - 225.0).abs() < 0.5);
         assert!((snap.outdoor[0].ue_loc[1] - (-150.0)).abs() < 0.5);
         assert!((snap.outdoor[0].ue_loc[2] - 75.0).abs() < 0.5);
         assert!((snap.outdoor[0].ue_yaw_deg - (-0.4f32.to_degrees())).abs() < 0.5);
+    }
+
+    #[tokio::test]
+    async fn http_manual_snapshot_and_delete_estate_lifecycle() {
+        let (hub, _rx) = test_hub();
+
+        let ensured = ensure_estate_handler(
+            State(hub.clone()),
+            Json(EnsureEstateRequest {
+                territory_type_id: 340,
+                world_id: 79,
+                ward_index: 2,
+                division: 0,
+                plot_index: Some(0),
+                plot_size: Some(0),
+                owner_content_id: 77,
+                owner_name: "SnapshotTester".to_string(),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        let created = create_snapshot_handler(
+            State(hub.clone()),
+            Path(ensured.land_ident),
+            Some(Json(CreateSnapshotRequest {
+                label: Some("  before remodel  ".to_string()),
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(created.land_ident, ensured.land_ident);
+        assert_eq!(created.label, "before remodel");
+
+        let listed = list_snapshots_handler(State(hub.clone()), Path(ensured.land_ident))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, created.id);
+
+        let deleted = delete_estate_handler(State(hub.clone()), Path(ensured.land_ident))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(deleted["ok"], true);
+        assert_eq!(deleted["land_ident"], ensured.land_ident);
+
+        let second_delete =
+            delete_estate_handler(State(hub.clone()), Path(ensured.land_ident)).await;
+        assert!(matches!(second_delete, Err((StatusCode::NOT_FOUND, _))));
+
+        let get_after_delete = get_estate_handler(State(hub), Path(ensured.land_ident)).await;
+        assert!(matches!(get_after_delete, Err((StatusCode::NOT_FOUND, _))));
     }
 }
