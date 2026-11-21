@@ -44,7 +44,7 @@ Upstream Kawari setup fundamentals remain documented at [docs.xiv.zone/kawari](h
 
 This fork would not exist without the engineering work of upstream Kawari and the broader FFXIV open-source research community:
 
-- **[Kawari](https://codeberg.org/redstrate/Kawari)** and **[physis](https://github.com/redstrate/physis)** by **redstrate** and Kawari contributors — for the modern, clean Rust FFXIV server foundation that makes downstream housing research possible.
+- **[Kawari](https://codeberg.org/redstrate/Kawari)**, **[physis](https://github.com/redstrate/physis)**, and **[icarus](https://github.com/redstrate/icarus)** by **redstrate** and Kawari contributors — for the modern, clean Rust FFXIV server foundation and Excel data libraries that make downstream housing research possible.
 - **Original Kawari Credits**:
   - [Sapphire](https://github.com/SapphireServer/Sapphire) for reference.
   - [iolite](https://github.com/0xbbadbeef/iolite) for inspiration & reference.
@@ -57,6 +57,6 @@ This fork would not exist without the engineering work of upstream Kawari and th
 
 ## License
 
-Foundation is licensed under the **[GNU Affero General Public License v3 (AGPL-3.0)](LICENSE)**, continuing Kawari's license. All source code in this fork—including downstream housing simulator additions—is publicly available under the terms of AGPL-3.0. Some assets or third-party components may carry their own licenses.
+Foundation is licensed under the **[GNU Affero General Public License v3 (AGPL-3.0)](LICENSE)**, continuing Kawari's license. All source code in this fork—including downstream housing simulator additions—is publicly available under the terms of AGPL-3.0. Prebuilt Windows release archives include `THIRD_PARTY_NOTICES.txt` covering statically linked Rust crates, bundled Bootstrap v5.3.8 (`MIT`), vendored Lua 5.4 (`MIT`), and bundled SQLite (`Public Domain`).
 
-*FINAL FANTASY* and *FINAL FANTASY XIV* are registered trademarks of Square Enix Co., Ltd. Foundation is an independent, non-commercial simulator/research fork and is not affiliated with, endorsed by, or supported by Square Enix. Proprietary or retail files (such as `oodle-network-shared.dll` and FINAL FANTASY XIV client data) are not distributed in this repository.
+*FINAL FANTASY* and *FINAL FANTASY XIV* are registered trademarks of Square Enix Co., Ltd. Foundation is an independent, non-commercial simulator/research fork and is not affiliated with, endorsed by, or supported by Square Enix. Proprietary or retail files (such as `oodle-network-shared.dll` from RAD Game Tools / Epic Games — subject to the [Unreal Engine EULA](https://www.unrealengine.com/eula/unreal) when obtained via Unreal Engine tooling — and FINAL FANTASY XIV client data) are never distributed in this repository or its release archives.

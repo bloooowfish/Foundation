@@ -67,6 +67,7 @@ jobs:
           }
           Copy-Item -Path 'LICENSE' -Destination (Join-Path $stage 'LICENSE') -Force
           Copy-Item -Path 'README.md' -Destination (Join-Path $stage 'README.md') -Force
+          python scripts/generate-third-party-notices.py --manifest Cargo.toml --exclude kawari-navimesh --output (Join-Path $stage 'THIRD_PARTY_NOTICES.txt')
 
           $ver = '${{ inputs.release_tag }}'
           if ([string]::IsNullOrWhiteSpace($ver)) {
